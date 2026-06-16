@@ -228,14 +228,14 @@
                             <div class="panel-header flex-between">
                                 <h3><i class="fa-solid fa-sliders"></i> Chế độ Lọc (GeoIP Policy)</h3>
                                 <div>
-                                    <button class="btn btn-sm btn-danger" onclick="setGeoPolicy('blacklist')"><i class="fa-solid fa-ban"></i> Blacklist (Mặc định)</button>
-                                    <button class="btn btn-sm btn-success" onclick="setGeoPolicy('whitelist')"><i class="fa-solid fa-check"></i> Whitelist (Chặn tất cả trừ...)</button>
+                                    <button class="btn btn-sm btn-danger" id="btnPolicyBlack" onclick="setGeoPolicy('blacklist')"><i class="fa-solid fa-ban"></i> Blacklist (Mặc định)</button>
+                                    <button class="btn btn-sm btn-success" id="btnPolicyWhite" onclick="setGeoPolicy('whitelist')"><i class="fa-solid fa-check"></i> Whitelist (Chặn tất cả trừ...)</button>
                                 </div>
                             </div>
                         </div>
                         <div class="panel glass">
                             <div class="panel-header flex-between">
-                                <h3><i class="fa-solid fa-network-wired"></i> Chặn theo ASN</h3>
+                                <h3 id="titleASN"><i class="fa-solid fa-network-wired"></i> Chặn theo ASN</h3>
                                 <button class="btn btn-sm btn-primary" id="btnAddASN"><i class="fa-solid fa-plus"></i> Thêm</button>
                             </div>
                             <div class="panel-body table-responsive">
@@ -255,7 +255,7 @@
 
                         <div class="panel glass">
                             <div class="panel-header flex-between">
-                                <h3><i class="fa-solid fa-globe"></i> Chặn theo Quốc gia</h3>
+                                <h3 id="titleCountry"><i class="fa-solid fa-globe"></i> Chặn theo Quốc gia</h3>
                                 <button class="btn btn-sm btn-primary" id="btnAddCountry"><i class="fa-solid fa-plus"></i> Thêm</button>
                             </div>
                             <div class="panel-body table-responsive">

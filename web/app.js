@@ -170,9 +170,10 @@ function loadTab(tabId) {
 }
 
 function startAutoRefresh() {
-    if (refreshTimer) clearInterval(refreshTimer);
-    loadCurrentTab();
-    refreshTimer = setInterval(() => {
+    stopAutoRefresh();
+    loadDashboard();
+    loadGeoPolicy();
+    refreshInterval = setInterval(() => {
         // Chỉ auto refresh Dashboard và Logs
         const activeTab = document.querySelector('.nav-item.active').getAttribute('data-tab');
         if (activeTab === 'dashboard') {
@@ -452,9 +453,12 @@ async function removeRoute(vip, backend, type) {
     }
 }
 
+let currentGeoPolicy = 'blacklist';
+
 async function addASN() {
+    const isWhite = currentGeoPolicy === 'whitelist';
     const { value: asn } = await Swal.fire({
-        title: 'Chặn theo ASN',
+        title: isWhite ? 'Cho phép theo ASN' : 'Chặn theo ASN',
         input: 'text',
         inputLabel: 'Nhập mã ASN (ví dụ AS12345)',
         showCancelButton: true
@@ -471,7 +475,9 @@ async function addASN() {
 }
 
 async function removeASN(asn) {
-    if (confirm(`Bạn có chắc muốn bỏ chặn toàn bộ ASN ${asn} không?`)) {
+    const isWhite = currentGeoPolicy === 'whitelist';
+    const actionText = isWhite ? 'loại bỏ ASN này khỏi danh sách cho phép' : 'bỏ chặn toàn bộ ASN';
+    if (confirm(`Bạn có chắc muốn ${actionText} ${asn} không?`)) {
         try {
             await apiRequest(`rules/asn?asn=${asn}`, 'DELETE');
             loadASN();
@@ -482,8 +488,9 @@ async function removeASN(asn) {
 }
 
 async function addCountry() {
+    const isWhite = currentGeoPolicy === 'whitelist';
     const { value: code } = await Swal.fire({
-        title: 'Chặn Quốc gia',
+        title: isWhite ? 'Cho phép Quốc gia' : 'Chặn Quốc gia',
         input: 'text',
         inputLabel: 'Mã quốc gia (ISO 3166-1 alpha-2, VD: VN, US, CN)',
         inputPlaceholder: 'US',
@@ -502,7 +509,9 @@ async function addCountry() {
 }
 
 async function removeCountry(country) {
-    if (confirm(`Bạn có chắc muốn bỏ chặn toàn bộ quốc gia ${country} không?`)) {
+    const isWhite = currentGeoPolicy === 'whitelist';
+    const actionText = isWhite ? 'loại bỏ quốc gia này khỏi danh sách cho phép' : 'bỏ chặn toàn bộ quốc gia';
+    if (confirm(`Bạn có chắc muốn ${actionText} ${country} không?`)) {
         try {
             await apiRequest(`rules/country?country=${country}`, 'DELETE');
             loadCountry();
@@ -517,9 +526,29 @@ async function setGeoPolicy(action) {
         try {
             const res = await apiRequest(`rules/policy?action=${action}`, 'POST');
             Swal.fire('Thành công', res, 'success');
+            loadGeoPolicy();
         } catch (e) {
             Swal.fire('Lỗi', e.message, 'error');
         }
+    }
+}
+
+async function loadGeoPolicy() {
+    try {
+        const res = await apiRequest('rules/policy');
+        if (res && res.policy) {
+            currentGeoPolicy = res.policy;
+            const isWhite = res.policy === 'whitelist';
+            // Update titles
+            document.getElementById('titleASN').innerHTML = isWhite ? '<i class="fa-solid fa-network-wired"></i> Cho phép theo ASN' : '<i class="fa-solid fa-network-wired"></i> Chặn theo ASN';
+            document.getElementById('titleCountry').innerHTML = isWhite ? '<i class="fa-solid fa-globe"></i> Cho phép theo Quốc gia' : '<i class="fa-solid fa-globe"></i> Chặn theo Quốc gia';
+            
+            // Highlight active button
+            document.getElementById('btnPolicyBlack').className = isWhite ? 'btn btn-sm btn-outline' : 'btn btn-sm btn-danger';
+            document.getElementById('btnPolicyWhite').className = isWhite ? 'btn btn-sm btn-success' : 'btn btn-sm btn-outline';
+        }
+    } catch (e) {
+        console.error("Lỗi khi tải GeoIP Policy:", e);
     }
 }
 
