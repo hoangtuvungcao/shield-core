@@ -181,6 +181,21 @@ func (m *MapManager) GetWhitelistIPs() ([]string, error) {
 	return ips, iter.Err()
 }
 
+// GetBlacklistIPs lấy danh sách tất cả IP đang bị chặn từ BPF map
+func (m *MapManager) GetBlacklistIPs() ([]string, error) {
+	var ips []string
+	var key uint32
+	var val uint64
+
+	iter := m.prog.objs.IpBlacklist.Iterate()
+	for iter.Next(&key, &val) {
+		ipBytes := make([]byte, 4)
+		binary.LittleEndian.PutUint32(ipBytes, key)
+		ips = append(ips, net.IP(ipBytes).String())
+	}
+	return ips, iter.Err()
+}
+
 type BackendInfo struct {
 	IP   uint32
 	Type uint8
@@ -409,19 +424,7 @@ func (m *MapManager) AddCountryBlacklist(cidrStr string) error {
 	return m.prog.objs.CountryBlacklist.Put(key, val)
 }
 
-func (m *MapManager) GetBlacklistIPs() ([]string, error) {
-	var ips []string
-	var key uint32
-	var val uint64
 
-	iter := m.prog.objs.IpBlacklist.Iterate()
-	for iter.Next(&key, &val) {
-		ipBytes := make([]byte, 4)
-		binary.LittleEndian.PutUint32(ipBytes, key)
-		ips = append(ips, net.IP(ipBytes).String())
-	}
-	return ips, iter.Err()
-}
 
 func (m *MapManager) GetASNBlacklists() ([]string, error) {
 	var list []string

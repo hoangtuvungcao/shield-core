@@ -181,6 +181,10 @@ func main() {
 		// Nạp danh sách cluster nodes để đồng bộ
 		loadClusterNodes(resolvePath("conf/nodes.json"))
 
+		// Khởi tạo persistence và khôi phục state từ lần chạy trước
+		initPersistence(resolvePath(""))
+		restoreRulesState()
+
 		// Khởi chạy Auto-Mitigation Engine chạy ngầm
 		go startAutoMitigation()
 
@@ -1029,6 +1033,7 @@ func handleASNBlacklist(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Query().Get("sync") != "true" {
 				syncGeoRuleEvent(http.MethodPost, "asn", asnStr)
 			}
+			go saveRulesState()
 		}
 		w.Write([]byte(fmt.Sprintf("Đã chặn %d dải IP thuộc ASN: %s", successCount, asnStr)))
 	} else if r.Method == http.MethodDelete {
@@ -1050,6 +1055,7 @@ func handleASNBlacklist(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Query().Get("sync") != "true" {
 				syncGeoRuleEvent(http.MethodDelete, "asn", asnStr)
 			}
+			go saveRulesState()
 		}
 		w.Write([]byte(fmt.Sprintf("Đã mở khoá %d dải IP thuộc ASN: %s", successCount, asnStr)))
 	} else {
@@ -1114,6 +1120,7 @@ func handleCountryBlacklist(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Query().Get("sync") != "true" {
 				syncGeoRuleEvent(http.MethodPost, "country", countryCode)
 			}
+			go saveRulesState()
 		}
 		w.Write([]byte(fmt.Sprintf("Đã chặn %d dải IP thuộc quốc gia: %s", successCount, countryCode)))
 	} else if r.Method == http.MethodDelete {
@@ -1135,6 +1142,7 @@ func handleCountryBlacklist(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Query().Get("sync") != "true" {
 				syncGeoRuleEvent(http.MethodDelete, "country", countryCode)
 			}
+			go saveRulesState()
 		}
 		w.Write([]byte(fmt.Sprintf("Đã mở khoá %d dải IP thuộc quốc gia: %s", successCount, countryCode)))
 	} else {
@@ -1186,6 +1194,7 @@ func handleGeoPolicy(w http.ResponseWriter, r *http.Request) {
 		syncGeoPolicyEvent(action)
 	}
 
+	go saveRulesState()
 	w.Write([]byte(fmt.Sprintf("Đã cập nhật chế độ GeoIP thành: %s", action)))
 }
 
