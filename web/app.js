@@ -1,6 +1,7 @@
 // Biến toàn cục
 let apiKey = localStorage.getItem('shield_api_key') || '';
 let refreshTimer = null;
+let refreshInterval = null;
 
 // Khởi tạo
 document.addEventListener('DOMContentLoaded', () => {
@@ -169,20 +170,35 @@ function loadTab(tabId) {
     }
 }
 
+function stopAutoRefresh() {
+    if (refreshInterval) {
+        clearInterval(refreshInterval);
+        refreshInterval = null;
+    }
+    if (refreshTimer) {
+        clearInterval(refreshTimer);
+        refreshTimer = null;
+    }
+}
+
 function startAutoRefresh() {
     stopAutoRefresh();
-    loadDashboard();
+    // Tải ngay lần đầu
+    fetchHealth();
+    fetchStats();
     loadGeoPolicy();
+    // Sau đó tự động cập nhật mỗi 2 giây
     refreshInterval = setInterval(() => {
-        // Chỉ auto refresh Dashboard và Logs
-        const activeTab = document.querySelector('.nav-item.active').getAttribute('data-tab');
-        if (activeTab === 'dashboard') {
+        const activeTab = document.querySelector('.nav-item.active');
+        if (!activeTab) return;
+        const tab = activeTab.getAttribute('data-tab');
+        if (tab === 'dashboard') {
             fetchHealth();
             fetchStats();
-        } else if (activeTab === 'logs') {
+        } else if (tab === 'logs') {
             loadLogs();
         }
-    }, 1000);
+    }, 2000);
 }
 
 // --- Cụ thể từng tính năng ---
