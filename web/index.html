@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shield-Core | Anti-DDoS Dashboard</title>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- SweetAlert2 cho Popup hiện đại -->
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Nền động Gradient -->
+    <div class="bg-animated"></div>
+
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <i class="fa-solid fa-shield-halved logo-icon"></i>
+                <h2>Shield-Core</h2>
+                <button class="close-sidebar" id="closeSidebar"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            
+            <nav class="nav-menu">
+                <a href="#" class="nav-item active" data-tab="dashboard">
+                    <i class="fa-solid fa-chart-line"></i> Tổng quan
+                </a>
+                <a href="#" class="nav-item" data-tab="blacklist">
+                    <i class="fa-solid fa-ban"></i> Chặn IP (Blacklist)
+                </a>
+                <a href="#" class="nav-item" data-tab="whitelist">
+                    <i class="fa-solid fa-shield-cat"></i> IP Ưu tiên (Whitelist)
+                </a>
+                <a href="#" class="nav-item" data-tab="routing">
+                    <i class="fa-solid fa-route"></i> Định tuyến (Routing)
+                </a>
+                <a href="#" class="nav-item" data-tab="geoip">
+                    <i class="fa-solid fa-globe"></i> GeoIP & ASN
+                </a>
+                <a href="#" class="nav-item" data-tab="logs">
+                    <i class="fa-solid fa-list-ol"></i> Lịch sử Đánh chặn
+                </a>
+                <a href="#" class="nav-item" data-tab="settings" id="btnSettings">
+                    <i class="fa-solid fa-key"></i> Xác thực API
+                </a>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="status-indicator">
+                    <span class="dot active" id="connDot"></span>
+                    <span id="connText">Đang kết nối...</span>
+                </div>
+                <div class="version">v1.0.0 (XDP Datapath)</div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <header class="topbar">
+                <button class="hamburger" id="btnMenu"><i class="fa-solid fa-bars"></i></button>
+                <div class="page-title" id="pageTitle">Tổng quan Hệ thống</div>
+                <div class="topbar-actions">
+                    <button class="btn-icon" id="btnRefresh" title="Làm mới dữ liệu"><i class="fa-solid fa-rotate-right"></i></button>
+                </div>
+            </header>
+
+            <div class="content-wrapper">
+                <!-- TAB: Dashboard -->
+                <section class="tab-pane active" id="tab-dashboard">
+                    <div class="stats-grid">
+                        <div class="stat-card glass">
+                            <div class="stat-icon text-green"><i class="fa-solid fa-check-circle"></i></div>
+                            <div class="stat-info">
+                                <h3>Gói tin Hợp lệ (Passed)</h3>
+                                <div class="stat-value" id="valPassed">0</div>
+                            </div>
+                        </div>
+                        <div class="stat-card glass">
+                            <div class="stat-icon text-red"><i class="fa-solid fa-shield-virus"></i></div>
+                            <div class="stat-info">
+                                <h3>Đã đánh chặn (Dropped)</h3>
+                                <div class="stat-value" id="valDropped">0</div>
+                            </div>
+                        </div>
+                        <div class="stat-card glass">
+                            <div class="stat-icon text-blue"><i class="fa-solid fa-clock"></i></div>
+                            <div class="stat-info">
+                                <h3>Thời gian hoạt động</h3>
+                                <div class="stat-value" id="valUptime">0s</div>
+                            </div>
+                        </div>
+                        <div class="stat-card glass">
+                            <div class="stat-icon text-purple"><i class="fa-solid fa-microchip"></i></div>
+                            <div class="stat-info">
+                                <h3>Trạng thái XDP</h3>
+                                <div class="stat-value" id="valXDP">Đang tải...</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="stats-grid mt-4">
+                        <div class="stat-card glass">
+                            <div class="stat-icon text-blue"><i class="fa-solid fa-memory"></i></div>
+                            <div class="stat-info">
+                                <h3>RAM Sử dụng</h3>
+                                <div class="stat-value" id="valRam">0 / 0 MB</div>
+                            </div>
+                        </div>
+                        <div class="stat-card glass">
+                            <div class="stat-icon text-red"><i class="fa-solid fa-microchip"></i></div>
+                            <div class="stat-info">
+                                <h3>Tải CPU (Load)</h3>
+                                <div class="stat-value" id="valLoad">0.00</div>
+                            </div>
+                        </div>
+                        <div class="stat-card glass">
+                            <div class="stat-icon text-green"><i class="fa-solid fa-server"></i></div>
+                            <div class="stat-info">
+                                <h3>Tiến trình OS</h3>
+                                <div class="stat-value" id="valProcs">0</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="panel glass mt-4">
+                        <div class="panel-header">
+                            <h3><i class="fa-solid fa-server"></i> Tình trạng Dịch vụ (Health)</h3>
+                        </div>
+                        <div class="panel-body">
+                            <ul class="health-list">
+                                <li><strong>API Status:</strong> <span class="badge badge-success" id="hStatus">Đang tải</span></li>
+                                <li><strong>Cơ sở dữ liệu ASN:</strong> <span class="badge" id="hASN">Đang tải</span></li>
+                                <li><strong>Cơ sở dữ liệu Country:</strong> <span class="badge" id="hCountry">Đang tải</span></li>
+                            </ul>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- TAB: Blacklist -->
+                <section class="tab-pane" id="tab-blacklist">
+                    <div class="panel glass">
+                        <div class="panel-header flex-between">
+                            <h3><i class="fa-solid fa-ban"></i> Danh sách IP bị chặn (Blacklist)</h3>
+                            <button class="btn btn-primary" id="btnAddBlacklist"><i class="fa-solid fa-plus"></i> Thêm IP</button>
+                        </div>
+                        <div class="panel-body">
+                            <div class="table-responsive">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>#</th>
+                                            <th>Địa chỉ IP</th>
+                                            <th>Hành động</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="blacklistTable">
+                                        <tr><td colspan="3" class="text-center">Đang tải dữ liệu...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- TAB: Whitelist -->
+                <section class="tab-pane" id="tab-whitelist">
+                    <div class="panel glass">
+                        <div class="panel-header flex-between">
+                            <h3><i class="fa-solid fa-shield-cat text-green"></i> Danh sách IP Ưu tiên (Whitelist)</h3>
+                            <button class="btn btn-primary" id="btnAddWhitelist"><i class="fa-solid fa-plus"></i> Thêm IP</button>
+                        </div>
+                        <div class="panel-body">
+                            <p style="color: var(--text-secondary); margin-bottom: 16px; font-size: 14px;">IP có trong danh sách này sẽ không bao giờ bị XDP chặn, bỏ qua mọi rule lọc Rate Limit và Blacklist.</p>
+                            <div class="table-responsive">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>#</th>
+                                            <th>Địa chỉ IP</th>
+                                            <th>Hành động</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="whitelistTable">
+                                        <tr><td colspan="3" class="text-center">Đang tải dữ liệu...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- TAB: Routing -->
+                <section class="tab-pane" id="tab-routing">
+                    <div class="panel glass">
+                        <div class="panel-header flex-between">
+                            <h3><i class="fa-solid fa-route"></i> Bảng định tuyến (IPIP Tunnel)</h3>
+                            <button class="btn btn-primary" id="btnAddRoute"><i class="fa-solid fa-plus"></i> Thêm Map</button>
+                        </div>
+                        <div class="panel-body">
+                            <div class="table-responsive">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>#</th>
+                                            <th>Front-end VIP</th>
+                                            <th>Backend Server</th>
+                                            <th>Loại Hầm (Tunnel)</th>
+                                            <th>Xoá</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="routingTable">
+                                        <tr><td colspan="5" class="text-center">Đang tải dữ liệu...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- TAB: GeoIP -->
+                <section class="tab-pane" id="tab-geoip">
+                    <div class="grid-2">
+                        <div class="panel glass">
+                            <div class="panel-header flex-between">
+                                <h3><i class="fa-solid fa-network-wired"></i> Chặn theo ASN</h3>
+                                <button class="btn btn-sm btn-primary" id="btnAddASN"><i class="fa-solid fa-plus"></i> Thêm</button>
+                            </div>
+                            <div class="panel-body table-responsive">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>CIDR/ASN</th>
+                                            <th>Xoá</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="asnTable">
+                                        <tr><td colspan="2" class="text-center">Đang tải...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div class="panel glass">
+                            <div class="panel-header flex-between">
+                                <h3><i class="fa-solid fa-globe"></i> Chặn theo Quốc gia</h3>
+                                <button class="btn btn-sm btn-primary" id="btnAddCountry"><i class="fa-solid fa-plus"></i> Thêm</button>
+                            </div>
+                            <div class="panel-body table-responsive">
+                                <table class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>CIDR/Country Code</th>
+                                            <th>Xoá</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="countryTable">
+                                        <tr><td colspan="2" class="text-center">Đang tải...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- TAB: Logs -->
+                <section class="tab-pane" id="tab-logs">
+                    <div class="panel glass" style="height: 75vh; display: flex; flex-direction: column;">
+                        <div class="panel-header flex-between">
+                            <h3><i class="fa-solid fa-list-ol"></i> Nhật ký Hệ thống (Live)</h3>
+                            <div class="status-indicator">
+                                <span class="dot active"></span> <span style="font-size: 13px; color: var(--text-secondary);">Tự động làm mới</span>
+                            </div>
+                        </div>
+                        <div class="panel-body" style="flex: 1; overflow-y: auto; background: rgba(0,0,0,0.3); font-family: monospace; padding: 12px;">
+                            <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                                <tbody id="logsTable">
+                                    <tr><td class="text-center" style="color: var(--text-secondary);">Đang chờ dữ liệu log...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <!-- Scripts -->
+    <script src="app.js"></script>
+</body>
+</html>

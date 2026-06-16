@@ -1,0 +1,13 @@
+/opt/shield-core/logs/mitigation.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 root root
+    size 100M
+    postrotate
+        # Không cần restart vì writeMitigationLog mở/đóng file mỗi lần ghi
+    endscript
+}

@@ -1,0 +1,12 @@
+{
+  "_comment": "Shield-Core Configuration Example - Copy to config.json và chỉnh sửa",
+  "_note_api_key": "Tạo key ngẫu nhiên: openssl rand -hex 32",
+  "geoip": {
+    "asn_db_path": "data/geoip/GeoLite2-ASN.mmdb",
+    "country_db_path": "data/geoip/GeoLite2-Country.mmdb"
+  },
+  "api": {
+    "api_key": "CHANGE_THIS_TO_YOUR_SECURE_32BYTE_HEX_KEY",
+    "listen": ":9090"
+  }
+}

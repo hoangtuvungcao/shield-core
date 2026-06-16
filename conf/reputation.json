@@ -1,0 +1,12 @@
+[
+  {
+    "cidr": "198.51.100.0/24",
+    "score": 90,
+    "description": "Known Botnet Subnet"
+  },
+  {
+    "cidr": "203.0.113.5/32",
+    "score": 85,
+    "description": "Active Malicious IP"
+  }
+]

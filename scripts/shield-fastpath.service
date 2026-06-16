@@ -1,0 +1,59 @@
+[Unit]
+Description=Shield-Core AF_XDP Fastpath DPI Engine
+Documentation=https://github.com/hoangtuvungcao/shield-core
+After=network-online.target shield-ctrl.service
+Requires=shield-ctrl.service
+# Đảm bảo shield-ctrl đã pin BPF maps trước khi fastpath khởi động
+# Nếu shield-ctrl chết -> fastpath cũng dừng (fail-safe: traffic trả về kernel XDP_PASS)
+
+[Service]
+Type=simple
+# AF_XDP socket yêu cầu CAP_NET_RAW + CAP_NET_ADMIN + CAP_BPF
+# Phải chạy root hoặc có đủ ambient capabilities
+User=root
+Group=root
+WorkingDirectory=/opt/shield-core
+
+# Binary path + interface
+ExecStart=/opt/shield-core/build/shield-fastpath eth0
+
+# Graceful stop
+ExecStop=/bin/kill -s SIGTERM $MAINPID
+TimeoutStopSec=5
+
+# Restart policy
+# on-failure: nếu crash -> fallback về kernel path (XDP_PASS)
+# KHÔNG dùng Restart=always để tránh restart loop khi BPF maps bị unpin
+Restart=on-failure
+RestartSec=3
+StartLimitBurst=3
+StartLimitIntervalSec=30
+
+# Resource limits
+LimitMEMLOCK=infinity
+LimitNOFILE=65536
+LimitNPROC=1024
+
+# CPU Affinity (production tuning - điều chỉnh theo số core thực tế)
+# CPUAffinity=2-7
+
+# Security (tối thiểu cho AF_XDP)
+# Không thể bật ProtectSystem=strict vì cần ghi vào /sys/fs/bpf
+NoNewPrivileges=no
+PrivateTmp=yes
+ProtectHome=yes
+PrivateDevices=no
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+
+# Environment
+EnvironmentFile=-/opt/shield-core/conf/.env
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=shield-fastpath
+
+[Install]
+WantedBy=multi-user.target

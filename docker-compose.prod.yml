@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  shield-core:
+    image: shield-core:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: shield-core-prod
+    network_mode: host
+    restart: always
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+      - SYS_RESOURCE
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - /sys/fs/bpf:/sys/fs/bpf:rw
+      - ./conf:/opt/shield-core/conf:rw
+      - ./logs:/opt/shield-core/logs:rw
+      - ./data:/opt/shield-core/data:ro
+    environment:
+      - SHIELD_IFACE=eth0
+    healthcheck:
+      test: ["CMD", "curl", "-k", "-f", "https://localhost:9090/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s

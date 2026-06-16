@@ -1,0 +1,44 @@
+# Shield-Core - Build artifacts
+build/
+*.o
+
+# Go binaries (should only live in build/)
+src/control_plane/shield-ctrl
+src/af_xdp/shield-fastpath
+
+# Third-party submodule (add via: git submodule add <url> modules/xdp-tools)
+modules/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# GeoIP databases (large binary files - download separately from MaxMind)
+data/geoip/*.mmdb
+
+
+# Secrets & TLS — NEVER commit these
+
+conf/.env
+conf/key.pem
+conf/cert.pem
+conf/config.json
+conf/nodes.json
+
+
+# BPF pinned maps
+/sys/fs/bpf/shield_core/
+
+# Docker
+.docker/

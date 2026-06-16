@@ -1,0 +1,64 @@
+[Unit]
+Description=Shield-Core XDP Anti-DDoS Control Plane
+Documentation=https://github.com/hoangtuvungcao/shield-core
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/sys/fs/bpf
+
+[Service]
+Type=simple
+# Khởi động ban đầu bằng root để mở socket + pin BPF map
+# Code tự hạ quyền xuống nobody (UID 65534) sau khi bind port
+User=root
+Group=root
+CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_SYS_ADMIN CAP_SETUID CAP_SETGID
+AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_SYS_ADMIN
+WorkingDirectory=/opt/shield-core
+
+# Binary path
+ExecStart=/opt/shield-core/build/shield-ctrl
+
+# Graceful stop: gửi SIGTERM, chờ 10s rồi SIGKILL
+ExecStop=/bin/kill -s SIGTERM $MAINPID
+TimeoutStopSec=10
+
+# Restart policy
+Restart=always
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+# Resource limits
+LimitMEMLOCK=infinity
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Security hardening
+# NoNewPrivileges=no vì cần syscall.Setuid/Setgid để tự hạ quyền
+NoNewPrivileges=no
+ProtectSystem=strict
+ReadWritePaths=/sys/fs/bpf /opt/shield-core/logs /opt/shield-core/data /opt/shield-core/conf /var/log/shield-core
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=no
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+RestrictRealtime=yes
+
+# Environment
+# Đặt tên interface mạng cần bảo vệ
+Environment=SHIELD_IFACE=eth0
+# Nạp thêm biến từ file .env nếu tồn tại (chứa API key, cấu hình tuỳ chỉnh)
+EnvironmentFile=-/opt/shield-core/conf/.env
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=shield-ctrl
+
+[Install]
+WantedBy=multi-user.target
