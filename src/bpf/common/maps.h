@@ -72,15 +72,6 @@ struct {
     __uint(max_entries, 1024);
 } backend_map SEC(".maps");
 
-// [MAP 4]: Local Ports Map (Cổng đang lắng nghe trên server)
-// Key: Port number (u16)
-// Value: Active status (u8)
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, __u16);
-    __type(value, __u8);
-    __uint(max_entries, 65536);
-} local_ports_map SEC(".maps");
 
 // [MAP 5]: XSK Map
 // Key: Queue ID (u32)

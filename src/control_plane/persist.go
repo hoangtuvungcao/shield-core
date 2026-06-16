@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"sync"
 )
 
 // RulesState lưu toàn bộ trạng thái rule để persist ra disk
@@ -16,7 +17,10 @@ type RulesState struct {
 	IPWhitelist []string `json:"ip_whitelist"` // IP được ưu tiên
 }
 
-var stateFilePath string
+var (
+	stateFilePath string
+	stateMutex    sync.Mutex
+)
 
 func initPersistence() {
 	stateFilePath = resolvePath("conf/rules_state.json")
@@ -27,6 +31,9 @@ func saveRulesState() {
 	if mapMgr == nil || stateFilePath == "" {
 		return
 	}
+
+	stateMutex.Lock()
+	defer stateMutex.Unlock()
 
 	state := RulesState{}
 
@@ -69,6 +76,9 @@ func restoreRulesState() {
 	if mapMgr == nil || stateFilePath == "" {
 		return
 	}
+
+	stateMutex.Lock()
+	defer stateMutex.Unlock()
 
 	data, err := os.ReadFile(stateFilePath)
 	if err != nil {
