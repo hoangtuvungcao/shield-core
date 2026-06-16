@@ -59,22 +59,30 @@ int xdp_prog_main(struct xdp_md *ctx)
     trie_key.prefix_len = 32;
     trie_key.data = src_ip;
 
-    // Tra cứu trong CIDR whitelist map
-    u64 *whitelisted = bpf_map_lookup_elem(&cidr_whitelist_map, &trie_key);
-    if (whitelisted) {
-        return XDP_PASS;
-    }
-    
-    // Tra cứu trong CIDR blacklist map
+    // 1. Kiểm tra Blacklist (Ưu tiên cao nhất)
     u64 *blocked = bpf_map_lookup_elem(&cidr_blacklist_map, &trie_key);
     if (blocked) {
         u32 drop_key = 1;
         u64 *drop_stats = bpf_map_lookup_elem(&stats_map, &drop_key);
-        if (drop_stats) {
-            (*drop_stats)++;
-        }
+        if (drop_stats) (*drop_stats)++;
         update_vip_stats(iph->daddr, 1);
         return XDP_DROP;
+    }
+
+    // 2. Kiểm tra GeoIP Policy & Whitelist
+    u32 policy_key = 2;
+    u64 *policy = bpf_map_lookup_elem(&config_map, &policy_key);
+    u8 geoip_policy = policy ? *policy : 0; // 0: Default Pass (Blacklist only), 1: Default Drop (Whitelist only)
+
+    if (geoip_policy == 1) {
+        u64 *whitelisted = bpf_map_lookup_elem(&cidr_whitelist_map, &trie_key);
+        if (!whitelisted) {
+            u32 drop_key = 1;
+            u64 *drop_stats = bpf_map_lookup_elem(&stats_map, &drop_key);
+            if (drop_stats) (*drop_stats)++;
+            update_vip_stats(iph->daddr, 1);
+            return XDP_DROP;
+        }
     }
     
     // Chỉ xử lý TCP, UDP, ICMP và IPIP. Các giao thức khác bỏ qua

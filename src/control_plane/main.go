@@ -915,17 +915,16 @@ func handleBlacklist(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodGet {
-		cidrs, err := mapMgr.GetBlacklistCIDRs()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		targets := mapMgr.GetBlacklistTargets()
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(cidrs)
+		json.NewEncoder(w).Encode(targets)
 		return
 	}
 
 	target := r.URL.Query().Get("target") // IP, CIDR, hoặc Mã Quốc Gia (VN, US)
+	if target == "" {
+		target = r.URL.Query().Get("ip")
+	}
 	if target == "" {
 		http.Error(w, "Thiếu tham số target", http.StatusBadRequest)
 		return
@@ -952,36 +951,41 @@ func handleBlacklist(w http.ResponseWriter, r *http.Request) {
 		cidrs = []string{target}
 	}
 
-	if r.Method == http.MethodPost { // Thêm vào Blacklist
+	switch r.Method {
+	case "POST":
 		successCount := 0
 		for _, c := range cidrs {
 			if err := mapMgr.BlockCIDR(c); err == nil {
 				successCount++
 			}
 		}
-		w.Write([]byte(fmt.Sprintf("Đã chặn %d dải mạng cho target: %s", successCount, target)))
-
-		writeMitigationLog("manual_block", target, "User added to blacklist", 0)
+		mapMgr.AddBlacklistTarget(target)
+		saveRulesState()
+		fmt.Fprintf(w, "Đã thêm %d dải mạng cho target %s vào danh sách đen\n", successCount, target)
+		writeMitigationLog("BLACKLIST_ADD", target, "User manually blacklisted", 0)
 
 		if r.URL.Query().Get("sync") != "true" {
 			syncIPEvent("blacklist", http.MethodPost, target)
 		}
-	} else if r.Method == http.MethodDelete { // Xoá khỏi Blacklist
+
+	case "DELETE":
 		successCount := 0
 		for _, c := range cidrs {
 			if err := mapMgr.AllowCIDR(c); err == nil {
 				successCount++
 			}
 		}
-		w.Write([]byte(fmt.Sprintf("Đã mở khoá %d dải mạng cho target: %s", successCount, target)))
+		mapMgr.RemoveBlacklistTarget(target)
+		saveRulesState()
+		fmt.Fprintf(w, "Đã xoá %d dải mạng cho target %s khỏi danh sách đen\n", successCount, target)
+		writeMitigationLog("BLACKLIST_REMOVE", target, "User manually un-blacklisted", 0)
 
-		writeMitigationLog("manual_unblock", target, "User removed from blacklist", 0)
-		// Đồng bộ nếu đây là request gốc từ người dùng/hệ thống
 		if r.URL.Query().Get("sync") != "true" {
 			syncIPEvent("blacklist", http.MethodDelete, target)
 		}
-	} else {
-		http.Error(w, "Method không hỗ trợ", http.StatusMethodNotAllowed)
+
+	default:
+		http.Error(w, "Method không được hỗ trợ", http.StatusMethodNotAllowed)
 	}
 }
 
@@ -1183,7 +1187,7 @@ func syncIPEvent(endpoint string, method string, ip string) {
 			if !strings.HasPrefix(secureNodeUrl, "https://") {
 				secureNodeUrl = "https://" + secureNodeUrl
 			}
-			url := fmt.Sprintf("%s/api/%s?ip=%s&sync=true", secureNodeUrl, endpoint, ip)
+			url := fmt.Sprintf("%s/api/%s?target=%s&sync=true", secureNodeUrl, endpoint, ip)
 			req, err := http.NewRequest(method, url, nil)
 			if err != nil {
 				log.Printf("[Sync -> %s] Lỗi tạo request: %v", secureNodeUrl, err)
@@ -1361,17 +1365,16 @@ func handleWhitelist(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == "GET" {
-		cidrs, err := mapMgr.GetWhitelistCIDRs()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		targets := mapMgr.GetWhitelistTargets()
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(cidrs)
+		json.NewEncoder(w).Encode(targets)
 		return
 	}
 
 	target := r.URL.Query().Get("target") // IP, CIDR, hoặc Mã Quốc Gia (VN, US)
+	if target == "" {
+		target = r.URL.Query().Get("ip")
+	}
 	if target == "" {
 		http.Error(w, "Thiếu tham số target", http.StatusBadRequest)
 		return
@@ -1406,6 +1409,8 @@ func handleWhitelist(w http.ResponseWriter, r *http.Request) {
 				successCount++
 			}
 		}
+		mapMgr.AddWhitelistTarget(target)
+		saveRulesState()
 		fmt.Fprintf(w, "Đã thêm %d dải mạng cho target %s vào Whitelist\n", successCount, target)
 		writeMitigationLog("WHITELIST_ADD", target, "User added to whitelist", 0)
 
@@ -1419,6 +1424,8 @@ func handleWhitelist(w http.ResponseWriter, r *http.Request) {
 				successCount++
 			}
 		}
+		mapMgr.RemoveWhitelistTarget(target)
+		saveRulesState()
 		fmt.Fprintf(w, "Đã xoá %d dải mạng cho target %s khỏi Whitelist\n", successCount, target)
 		writeMitigationLog("WHITELIST_REMOVE", target, "User removed from whitelist", 0)
 

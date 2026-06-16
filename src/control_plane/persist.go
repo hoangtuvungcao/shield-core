@@ -4,13 +4,14 @@ import (
 	"encoding/json"
 	"log"
 	"os"
+	"strings"
 	"sync"
 )
 
 // RulesState lưu toàn bộ trạng thái rule để persist ra disk
 type RulesState struct {
-	BlacklistCIDRs []string `json:"blacklist_cidrs"`
-	WhitelistCIDRs []string `json:"whitelist_cidrs"`
+	BlacklistTargets []string `json:"blacklist_targets"`
+	WhitelistTargets []string `json:"whitelist_targets"`
 }
 
 var (
@@ -31,15 +32,10 @@ func saveRulesState() {
 	stateMutex.Lock()
 	defer stateMutex.Unlock()
 
-	state := RulesState{}
-
-	// Lấy CIDR Blacklist từ BPF map
-	cidrsBl, _ := mapMgr.GetBlacklistCIDRs()
-	state.BlacklistCIDRs = cidrsBl
-
-	// Lấy CIDR Whitelist từ BPF map
-	cidrsWl, _ := mapMgr.GetWhitelistCIDRs()
-	state.WhitelistCIDRs = cidrsWl
+	state := RulesState{
+		BlacklistTargets: mapMgr.GetBlacklistTargets(),
+		WhitelistTargets: mapMgr.GetWhitelistTargets(),
+	}
 
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
@@ -50,6 +46,31 @@ func saveRulesState() {
 	if err := os.WriteFile(stateFilePath, data, 0640); err != nil {
 		log.Printf("[Persist] Lỗi ghi state file %s: %v", stateFilePath, err)
 		return
+	}
+}
+
+// applyTargetToMap expands the target and applies it to the BPF maps
+func applyTargetToMap(target string, isWhitelist bool) {
+	var cidrs []string
+	if len(target) == 2 && !strings.Contains(target, ".") {
+		if geoIPMgr != nil {
+			resolved, err := geoIPMgr.GetCountryCIDRs(strings.ToUpper(target))
+			if err == nil && len(resolved) > 0 {
+				cidrs = resolved
+			}
+		}
+	} else if !strings.Contains(target, "/") {
+		cidrs = []string{target + "/32"}
+	} else {
+		cidrs = []string{target}
+	}
+
+	for _, c := range cidrs {
+		if isWhitelist {
+			mapMgr.AddWhitelistCIDR(c)
+		} else {
+			mapMgr.BlockCIDR(c)
+		}
 	}
 }
 
@@ -82,21 +103,23 @@ func restoreRulesState() {
 	restored := 0
 
 	// Restore Blacklist
-	for _, cidr := range state.BlacklistCIDRs {
-		mapMgr.BlockCIDR(cidr)
+	for _, target := range state.BlacklistTargets {
+		mapMgr.AddBlacklistTarget(target)
+		applyTargetToMap(target, false)
 		restored++
 	}
-	if len(state.BlacklistCIDRs) > 0 {
-		log.Printf("[Persist] ✓ Khôi phục %d dải mạng vào Blacklist", len(state.BlacklistCIDRs))
+	if len(state.BlacklistTargets) > 0 {
+		log.Printf("[Persist] ✓ Khôi phục %d mục vào Blacklist", len(state.BlacklistTargets))
 	}
 
 	// Restore Whitelist
-	for _, cidr := range state.WhitelistCIDRs {
-		mapMgr.AddWhitelistCIDR(cidr)
+	for _, target := range state.WhitelistTargets {
+		mapMgr.AddWhitelistTarget(target)
+		applyTargetToMap(target, true)
 		restored++
 	}
-	if len(state.WhitelistCIDRs) > 0 {
-		log.Printf("[Persist] ✓ Khôi phục %d dải mạng vào Whitelist", len(state.WhitelistCIDRs))
+	if len(state.WhitelistTargets) > 0 {
+		log.Printf("[Persist] ✓ Khôi phục %d mục vào Whitelist", len(state.WhitelistTargets))
 	}
 
 	log.Printf("[Persist] Hoàn thành khôi phục: %d mục.", restored)

@@ -6,9 +6,6 @@ build/
 src/control_plane/shield-ctrl
 src/af_xdp/shield-fastpath
 
-# Third-party submodule (add via: git submodule add <url> modules/xdp-tools)
-modules/
-
 # IDE
 .vscode/
 .idea/
@@ -23,11 +20,6 @@ Thumbs.db
 # Logs
 logs/
 *.log
-
-
-
-
-# Secrets & TLS — NEVER commit these
 
 
 # BPF pinned maps

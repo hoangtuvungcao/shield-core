@@ -16,14 +16,21 @@ type MapManager struct {
 	prog            *XDPProgram
 	activeCountries map[string]bool
 	activeASNs      map[string]bool
+	
+	// Track user-configured targets directly (IP, CIDR, or Country Code)
+	WhitelistTargets map[string]bool
+	BlacklistTargets map[string]bool
+
 	sync.RWMutex
 }
 
 func NewMapManager(prog *XDPProgram) *MapManager {
 	return &MapManager{
-		prog:            prog,
-		activeCountries: make(map[string]bool),
-		activeASNs:      make(map[string]bool),
+		prog:             prog,
+		activeCountries:  make(map[string]bool),
+		activeASNs:       make(map[string]bool),
+		WhitelistTargets: make(map[string]bool),
+		BlacklistTargets: make(map[string]bool),
 	}
 }
 
@@ -230,6 +237,52 @@ func (m *MapManager) GetBlacklistCIDRs() ([]string, error) {
 		cidrs = append(cidrs, formatLpmKey(key))
 	}
 	return cidrs, iter.Err()
+}
+
+// --- Target Management ---
+
+func (m *MapManager) AddWhitelistTarget(target string) {
+	m.Lock()
+	m.WhitelistTargets[target] = true
+	m.Unlock()
+}
+
+func (m *MapManager) RemoveWhitelistTarget(target string) {
+	m.Lock()
+	delete(m.WhitelistTargets, target)
+	m.Unlock()
+}
+
+func (m *MapManager) GetWhitelistTargets() []string {
+	m.RLock()
+	defer m.RUnlock()
+	list := make([]string, 0, len(m.WhitelistTargets))
+	for k := range m.WhitelistTargets {
+		list = append(list, k)
+	}
+	return list
+}
+
+func (m *MapManager) AddBlacklistTarget(target string) {
+	m.Lock()
+	m.BlacklistTargets[target] = true
+	m.Unlock()
+}
+
+func (m *MapManager) RemoveBlacklistTarget(target string) {
+	m.Lock()
+	delete(m.BlacklistTargets, target)
+	m.Unlock()
+}
+
+func (m *MapManager) GetBlacklistTargets() []string {
+	m.RLock()
+	defer m.RUnlock()
+	list := make([]string, 0, len(m.BlacklistTargets))
+	for k := range m.BlacklistTargets {
+		list = append(list, k)
+	}
+	return list
 }
 
 type BackendInfo struct {

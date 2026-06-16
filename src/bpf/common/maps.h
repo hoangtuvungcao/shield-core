@@ -124,4 +124,13 @@ struct {
 } ring_stats_map SEC(".maps");
 
 
-
+// [MAP 12]: Local Ports Map
+// Bypass Rate Limit/GeoIP for local administration ports like 22, 9090
+// Key: dport (u16)
+// Value: Bypass Action (u8)
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __type(key, u16);
+    __type(value, u8);
+    __uint(max_entries, 1024);
+} local_ports_map SEC(".maps");
