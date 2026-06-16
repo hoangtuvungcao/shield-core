@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"log"
 	"os"
-	"path/filepath"
 	"strconv"
 )
 
@@ -19,8 +18,8 @@ type RulesState struct {
 
 var stateFilePath string
 
-func initPersistence(basePath string) {
-	stateFilePath = filepath.Join(basePath, "conf", "rules_state.json")
+func initPersistence() {
+	stateFilePath = resolvePath("conf/rules_state.json")
 }
 
 // saveRulesState ghi state hiện tại ra file. Gọi sau mỗi thay đổi.

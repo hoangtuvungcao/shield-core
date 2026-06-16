@@ -182,7 +182,7 @@ func main() {
 		loadClusterNodes(resolvePath("conf/nodes.json"))
 
 		// Khởi tạo persistence và khôi phục state từ lần chạy trước
-		initPersistence(resolvePath(""))
+		initPersistence()
 		restoreRulesState()
 
 		// Khởi chạy Auto-Mitigation Engine chạy ngầm
