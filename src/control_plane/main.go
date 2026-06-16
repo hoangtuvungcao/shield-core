@@ -249,7 +249,6 @@ func main() {
 	mux.HandleFunc("/api/rules/asn", rateLimitMiddleware(authMiddleware(handleASNBlacklist)))
 	mux.HandleFunc("/api/rules/country", rateLimitMiddleware(authMiddleware(handleCountryBlacklist)))
 	mux.HandleFunc("/api/rules/policy", rateLimitMiddleware(authMiddleware(handleGeoPolicy)))
-	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/api/geoip/health", rateLimitMiddleware(authMiddleware(handleGeoIPHealth)))
 	mux.HandleFunc("/api/geoip/reload", rateLimitMiddleware(authMiddleware(handleGeoIPReload)))
 	mux.HandleFunc("/api/whitelist", rateLimitMiddleware(authMiddleware(handleWhitelist)))
@@ -830,6 +829,9 @@ func handlePrometheusMetrics(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "shield_core_map_max_entries{map=\"%s\"} %d\n", mh.Name, mh.MaxEntries)
 		}
 	}
+	
+	// Xuất các metrics từ Prometheus client
+	promhttp.Handler().ServeHTTP(w, r)
 }
 
 // --- Các API Handlers ---
