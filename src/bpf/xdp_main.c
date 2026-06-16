@@ -202,6 +202,10 @@ int xdp_prog_main(struct xdp_md *ctx)
     }
 
     // [Pipeline 2] Flow Tracking & SYN Cookie - Khôi phục hoạt động cho Kernel 5.15+
+    // BUG FIX: XDP SYN Cookie implementation without proper TCP Options (TS val/ecr)
+    // rewriting causes clients (like curl, browsers) to silently drop the SYN-ACK.
+    // Disabling this pipeline completely and relying on Pipeline 1.6 Rate Limiting.
+    /*
     if (protocol == IPPROTO_TCP) {
         if (dport != 22 && dport != 9090) {
             int action = process_tcp_syncookie(ctx, eth, iph, tcph);
@@ -214,6 +218,7 @@ int xdp_prog_main(struct xdp_md *ctx)
             }
         }
     }
+    */
     
     
     // [Pipeline 2.5] Steam A2S Query Cache (L4 Cache)
