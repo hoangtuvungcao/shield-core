@@ -90,13 +90,19 @@ func restoreRulesState() {
 	restored := 0
 
 	// Restore GeoIP Policy
-	if state.GeoPolicy == "whitelist" {
+	// [SAFETY] Chỉ restore Whitelist mode nếu có ít nhất 1 country hoặc ASN được cấu hình.
+	// Nếu Whitelist mode mà danh sách rỗng = block toàn bộ server → tự động fallback Blacklist.
+	if state.GeoPolicy == "whitelist" && (len(state.Countries) > 0 || len(state.ASNs) > 0) {
 		if err := mapMgr.SetGeoIPPolicy(1); err != nil {
 			log.Printf("[Persist] Lỗi khôi phục policy: %v", err)
 		} else {
 			log.Println("[Persist] ✓ GeoIP Policy: Whitelist")
 			restored++
 		}
+	} else if state.GeoPolicy == "whitelist" {
+		log.Println("[Persist] GeoIP Policy: Whitelist nhưng danh sách rỗng → Fallback về Blacklist để tránh block toàn bộ server.")
+		// Đảm bảo BPF cũng ở chế độ blacklist
+		mapMgr.SetGeoIPPolicy(0)
 	}
 
 	// Restore Countries - gọi lại geoIPMgr để tra CIDRs
