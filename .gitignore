@@ -24,17 +24,10 @@ Thumbs.db
 logs/
 *.log
 
-# GeoIP databases (large binary files - download separately from MaxMind)
-data/geoip/*.mmdb
+
 
 
 # Secrets & TLS — NEVER commit these
-
-conf/.env
-conf/key.pem
-conf/cert.pem
-conf/config.json
-conf/nodes.json
 
 
 # BPF pinned maps

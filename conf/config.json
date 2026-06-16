@@ -1,0 +1,10 @@
+{
+  "geoip": {
+    "asn_db_path": "data/geoip/GeoLite2-ASN.mmdb",
+    "country_db_path": "data/geoip/GeoLite2-Country.mmdb"
+  },
+  "api": {
+    "api_key": "14f0031a85e3a4f9ee7e6b374831b3b71ac8797f0d92a6f70f22a006dad1639d",
+    "listen": ":9090"
+  }
+}
