@@ -413,7 +413,11 @@ func (m *MapManager) AddASNBlacklist(cidrStr string) error {
 		Data:      ipVal,
 	}
 	var val uint64 = 1
-	return m.prog.objs.AsnBlacklist.Put(key, val)
+	if err := m.prog.objs.AsnBlacklist.Put(key, val); err != nil {
+		return err
+	}
+	m.UpdateGeoRuleCount()
+	return nil
 }
 
 func (m *MapManager) RemoveASNBlacklist(cidrStr string) error {
@@ -425,7 +429,11 @@ func (m *MapManager) RemoveASNBlacklist(cidrStr string) error {
 		PrefixLen: prefixLen,
 		Data:      ipVal,
 	}
-	return m.prog.objs.AsnBlacklist.Delete(key)
+	if err := m.prog.objs.AsnBlacklist.Delete(key); err != nil {
+		return err
+	}
+	m.UpdateGeoRuleCount()
+	return nil
 }
 
 func (m *MapManager) AddCountryBlacklist(cidrStr string) error {
@@ -438,7 +446,43 @@ func (m *MapManager) AddCountryBlacklist(cidrStr string) error {
 		Data:      ipVal,
 	}
 	var val uint64 = 1
-	return m.prog.objs.CountryBlacklist.Put(key, val)
+	if err := m.prog.objs.CountryBlacklist.Put(key, val); err != nil {
+		return err
+	}
+	m.UpdateGeoRuleCount()
+	return nil
+}
+
+func (m *MapManager) RemoveCountryBlacklist(cidrStr string) error {
+	ipVal, prefixLen, err := parseCIDR(cidrStr)
+	if err != nil {
+		return err
+	}
+	key := LpmTrieKey{
+		PrefixLen: prefixLen,
+		Data:      ipVal,
+	}
+	if err := m.prog.objs.CountryBlacklist.Delete(key); err != nil {
+		return err
+	}
+	m.UpdateGeoRuleCount()
+	return nil
+}
+
+func (m *MapManager) UpdateGeoRuleCount() {
+	count := uint64(0)
+	var key LpmTrieKey
+	var val uint64
+	iterAsn := m.prog.objs.AsnBlacklist.Iterate()
+	for iterAsn.Next(&key, &val) {
+		count++
+	}
+	iterCountry := m.prog.objs.CountryBlacklist.Iterate()
+	for iterCountry.Next(&key, &val) {
+		count++
+	}
+	var countKey uint32 = 3
+	m.prog.objs.ConfigMap.Put(countKey, count)
 }
 
 
@@ -473,17 +517,6 @@ func (m *MapManager) GetCountryBlacklists() ([]string, error) {
 	return list, iter.Err()
 }
 
-func (m *MapManager) RemoveCountryBlacklist(cidrStr string) error {
-	ipVal, prefixLen, err := parseCIDR(cidrStr)
-	if err != nil {
-		return err
-	}
-	key := LpmTrieKey{
-		PrefixLen: prefixLen,
-		Data:      ipVal,
-	}
-	return m.prog.objs.CountryBlacklist.Delete(key)
-}
 
 type VipStatsVal struct {
 	Passed  uint64

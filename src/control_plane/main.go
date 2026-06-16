@@ -711,7 +711,7 @@ func startAutoMitigation() {
 		}
 		for _, ip := range blockedIPs {
 			log.Printf("[Auto-Mitigation] ĐÃ CHẶN IP NGUỒN TẤN CÔNG (Spam vượt ngưỡng %d PPS): %s", currentPPSThreshold, ip)
-			syncBlacklistEvent(http.MethodPost, ip)
+			syncIPEvent("blacklist", http.MethodPost, ip)
 			writeMitigationLog("mitigation_block", ip, "Traffic threshold exceeded", currentPPSThreshold)
 		}
 
@@ -871,7 +871,7 @@ func handleBlacklist(w http.ResponseWriter, r *http.Request) {
 
 		// Đồng bộ nếu đây là request gốc từ người dùng/hệ thống cục bộ
 		if r.URL.Query().Get("sync") != "true" {
-			syncBlacklistEvent(http.MethodPost, ip)
+			syncIPEvent("blacklist", http.MethodPost, ip)
 		}
 	} else if r.Method == http.MethodDelete { // Xoá khỏi Blacklist
 		if err := mapMgr.AllowIP(ip); err != nil {
@@ -883,9 +883,9 @@ func handleBlacklist(w http.ResponseWriter, r *http.Request) {
 		// Ghi log sự kiện
 		writeMitigationLog("manual_allow", ip, "Administrator API request", 0)
 
-		// Đồng bộ nếu đây là request gốc từ người dùng/hệ thống cục bộ
+		// Đồng bộ nếu đây là request gốc từ người dùng/hệ thống
 		if r.URL.Query().Get("sync") != "true" {
-			syncBlacklistEvent(http.MethodDelete, ip)
+			syncIPEvent("blacklist", http.MethodDelete, ip)
 		}
 	} else {
 		http.Error(w, "Method không hỗ trợ", http.StatusMethodNotAllowed)
@@ -1078,7 +1078,7 @@ func isHostAndPortLocal(host, port string) bool {
 	return false
 }
 
-func syncBlacklistEvent(method string, ip string) {
+func syncIPEvent(endpoint string, method string, ip string) {
 	for _, node := range clusterNodes {
 		if isLocalAddress(node) {
 			log.Printf("[Sync] Bỏ qua gửi sync event tới chính nó (local node: %s)", node)
@@ -1090,7 +1090,7 @@ func syncBlacklistEvent(method string, ip string) {
 			if !strings.HasPrefix(secureNodeUrl, "https://") {
 				secureNodeUrl = "https://" + secureNodeUrl
 			}
-			url := fmt.Sprintf("%s/api/blacklist?ip=%s&sync=true", secureNodeUrl, ip)
+			url := fmt.Sprintf("%s/api/%s?ip=%s&sync=true", secureNodeUrl, endpoint, ip)
 			req, err := http.NewRequest(method, url, nil)
 			if err != nil {
 				log.Printf("[Sync -> %s] Lỗi tạo request: %v", secureNodeUrl, err)
@@ -1113,7 +1113,7 @@ func syncBlacklistEvent(method string, ip string) {
 				return
 			}
 			resp.Body.Close()
-			log.Printf("[Sync -> %s] Đã đồng bộ sự kiện %s cho IP %s (Status: %d)", secureNodeUrl, method, ip, resp.StatusCode)
+			log.Printf("[Sync -> %s] Đã đồng bộ sự kiện %s cho %s (IP: %s) (Status: %d)", secureNodeUrl, method, endpoint, ip, resp.StatusCode)
 		}(node)
 	}
 }
@@ -1518,6 +1518,10 @@ func handleWhitelist(w http.ResponseWriter, r *http.Request) {
 		}
 		fmt.Fprintf(w, "Đã thêm IP %s vào Whitelist\n", ip)
 		writeMitigationLog("WHITELIST_ADD", ip, "User added to whitelist", 0)
+		
+		if r.URL.Query().Get("sync") != "true" {
+			syncIPEvent("whitelist", http.MethodPost, ip)
+		}
 	case "DELETE":
 		err := mapMgr.RemoveWhitelistIP(ip)
 		if err != nil {
@@ -1526,6 +1530,10 @@ func handleWhitelist(w http.ResponseWriter, r *http.Request) {
 		}
 		fmt.Fprintf(w, "Đã xoá IP %s khỏi Whitelist\n", ip)
 		writeMitigationLog("WHITELIST_REMOVE", ip, "User removed from whitelist", 0)
+		
+		if r.URL.Query().Get("sync") != "true" {
+			syncIPEvent("whitelist", http.MethodDelete, ip)
+		}
 	default:
 		http.Error(w, "Method không được hỗ trợ", http.StatusMethodNotAllowed)
 	}
