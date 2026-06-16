@@ -145,13 +145,20 @@ int xdp_prog_main(struct xdp_md *ctx)
         }
     } else {
         // Whitelist mode: Nếu KHÔNG có trong map -> DROP
-        if (!bpf_map_lookup_elem(&asn_blacklist_map, &trie_key) && 
-            !bpf_map_lookup_elem(&country_blacklist_map, &trie_key)) {
-            u32 drop_key = 1;
-            u64 *drop_stats = bpf_map_lookup_elem(&stats_map, &drop_key);
-            if (drop_stats) (*drop_stats)++;
-            update_vip_stats(iph->daddr, 1);
-            return XDP_DROP;
+        u32 wlist_count_key = 3;
+        u64 *wlist_count_val = bpf_map_lookup_elem(&config_map, &wlist_count_key);
+        u64 wlist_count = wlist_count_val ? *wlist_count_val : 0;
+
+        // Nếu Whitelist đang bật nhưng danh sách bị trống rỗng -> Fallback thành Allow All
+        if (wlist_count > 0) {
+            if (!bpf_map_lookup_elem(&asn_blacklist_map, &trie_key) && 
+                !bpf_map_lookup_elem(&country_blacklist_map, &trie_key)) {
+                u32 drop_key = 1;
+                u64 *drop_stats = bpf_map_lookup_elem(&stats_map, &drop_key);
+                if (drop_stats) (*drop_stats)++;
+                update_vip_stats(iph->daddr, 1);
+                return XDP_DROP;
+            }
         }
     }
 

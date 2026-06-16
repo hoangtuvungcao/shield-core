@@ -50,15 +50,25 @@ func (m *MapManager) GetGeoIPPolicy() (uint64, error) {
 	return val, nil
 }
 
+func (m *MapManager) updateWhitelistCount() {
+	count := len(m.activeCountries) + len(m.activeASNs)
+	if m.prog.objs.ConfigMap != nil {
+		var key uint32 = 3
+		m.prog.objs.ConfigMap.Put(key, uint64(count))
+	}
+}
+
 func (m *MapManager) AddActiveCountry(countryCode string) {
 	m.Lock()
 	m.activeCountries[countryCode] = true
+	m.updateWhitelistCount()
 	m.Unlock()
 }
 
 func (m *MapManager) RemoveActiveCountry(countryCode string) {
 	m.Lock()
 	delete(m.activeCountries, countryCode)
+	m.updateWhitelistCount()
 	m.Unlock()
 }
 
@@ -75,12 +85,14 @@ func (m *MapManager) GetActiveCountries() []string {
 func (m *MapManager) AddActiveASN(asn string) {
 	m.Lock()
 	m.activeASNs[asn] = true
+	m.updateWhitelistCount()
 	m.Unlock()
 }
 
 func (m *MapManager) RemoveActiveASN(asn string) {
 	m.Lock()
 	delete(m.activeASNs, asn)
+	m.updateWhitelistCount()
 	m.Unlock()
 }
 
