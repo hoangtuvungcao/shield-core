@@ -407,6 +407,33 @@ type cpuStats struct {
 	user, nice, system, idle, iowait, irq, softirq, steal, guest, guestnice uint64
 }
 
+func getMemoryStats() (float64, error) {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0, err
+	}
+	lines := strings.Split(string(data), "\n")
+	var memTotal, memFree, buffers, cached, sReclaimable uint64
+	for _, line := range lines {
+		if strings.HasPrefix(line, "MemTotal:") {
+			fmt.Sscanf(line, "MemTotal: %d", &memTotal)
+		} else if strings.HasPrefix(line, "MemFree:") {
+			fmt.Sscanf(line, "MemFree: %d", &memFree)
+		} else if strings.HasPrefix(line, "Buffers:") {
+			fmt.Sscanf(line, "Buffers: %d", &buffers)
+		} else if strings.HasPrefix(line, "Cached:") {
+			fmt.Sscanf(line, "Cached: %d", &cached)
+		} else if strings.HasPrefix(line, "SReclaimable:") {
+			fmt.Sscanf(line, "SReclaimable: %d", &sReclaimable)
+		}
+	}
+	if memTotal == 0 {
+		return 0, fmt.Errorf("không tìm thấy MemTotal")
+	}
+	usedKB := memTotal - memFree - buffers - cached - sReclaimable
+	return float64(usedKB) / float64(memTotal) * 100.0, nil
+}
+
 func getCPUStats() (cpuStats, error) {
 	data, err := os.ReadFile("/proc/stat")
 	if err != nil {
@@ -463,9 +490,9 @@ func calculateCPUUsage(prev, curr cpuStats) float64 {
 	return float64(totalDiff-idleDiff) / float64(totalDiff) * 100.0
 }
 
-// startAutoMitigation chạy vòng lặp quét IP spam và tự động cách ly
+// startAutoMitigation chạy vòng lặp quét IP spam và tự động cách ly (FSM 5 Level)
 func startAutoMitigation() {
-	log.Println("Đang khởi động Auto-Mitigation Engine...")
+	log.Println("Đang khởi động Auto-Mitigation Engine v2...")
 	
 	var prevCPU cpuStats
 	if stats, err := getCPUStats(); err == nil {
@@ -475,26 +502,74 @@ func startAutoMitigation() {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
+	currentLevel := 0
+	levelHoldTime := 0 // Dùng để làm Hysteresis (tránh flapping)
+
 	for range ticker.C {
 		if mapMgr == nil {
 			continue
 		}
 
-		// Giám sát CPU
-		currentPPSThreshold := uint64(5000)
-		currentBPSThreshold := uint64(10 * 1024 * 1024)
+		cpuPercent := 0.0
+		ramPercent := 0.0
 
 		if currCPU, err := getCPUStats(); err == nil {
-			cpuPercent := calculateCPUUsage(prevCPU, currCPU)
+			cpuPercent = calculateCPUUsage(prevCPU, currCPU)
 			prevCPU = currCPU
+		}
 
-			if cpuPercent > 80.0 {
-				log.Printf("[Circuit Breaker] Cảnh báo CPU quá tải: %.2f%%. Kích hoạt Load Shedding, thắt chặt ngưỡng lọc.", cpuPercent)
-				currentPPSThreshold = 1000            // Hạ thấp ngưỡng PPS xuống 1000 để lọc triệt để hơn
-				currentBPSThreshold = 2 * 1024 * 1024 // Hạ thấp ngưỡng BPS xuống 2MB/s
+		if currRam, err := getMemoryStats(); err == nil {
+			ramPercent = currRam
+		}
+
+		// Xác định Target Level dựa trên tài nguyên
+		targetLevel := 0
+		if cpuPercent > 95.0 || ramPercent > 95.0 {
+			targetLevel = 4
+		} else if cpuPercent > 90.0 || ramPercent > 92.0 {
+			targetLevel = 3
+		} else if cpuPercent > 80.0 || ramPercent > 85.0 {
+			targetLevel = 2
+		} else if cpuPercent > 60.0 || ramPercent > 70.0 {
+			targetLevel = 1
+		}
+
+		// Cơ chế Hysteresis: Lên level ngay lập tức, nhưng xuống level thì phải từ từ
+		if targetLevel > currentLevel {
+			currentLevel = targetLevel
+			levelHoldTime = 10 // Giữ tối thiểu 10 giây trước khi hạ
+			log.Printf("[FSM] Tăng cấp độ phòng thủ lên Level %d (CPU: %.2f%%, RAM: %.2f%%)", currentLevel, cpuPercent, ramPercent)
+		} else if targetLevel < currentLevel {
+			if levelHoldTime > 0 {
+				levelHoldTime--
 			} else {
-				log.Printf("[CPU Monitor] CPU Usage: %.2f%%", cpuPercent)
+				currentLevel = targetLevel
+				levelHoldTime = 5 // Giữ 5 giây cho mỗi lần hạ cấp
+				log.Printf("[FSM] Hạ nhiệt độ phòng thủ xuống Level %d (CPU: %.2f%%, RAM: %.2f%%)", currentLevel, cpuPercent, ramPercent)
 			}
+		}
+
+		// Áp dụng chính sách dựa trên Level
+		currentPPSThreshold := uint64(5000)
+		currentBPSThreshold := uint64(10 * 1024 * 1024)
+		ttl := uint64(3600) // 1 hour TTL default
+
+		switch currentLevel {
+		case 1:
+			currentPPSThreshold = 3000
+			currentBPSThreshold = 5 * 1024 * 1024
+		case 2:
+			currentPPSThreshold = 1000
+			currentBPSThreshold = 2 * 1024 * 1024
+			ttl = 14400 // 4 hours
+		case 3:
+			currentPPSThreshold = 300
+			currentBPSThreshold = 500 * 1024
+			ttl = 86400 // 24 hours
+		case 4:
+			currentPPSThreshold = 100
+			currentBPSThreshold = 100 * 1024
+			ttl = 86400 // 24 hours
 		}
 
 		// Cập nhật ngưỡng động vào eBPF config_map
@@ -502,22 +577,26 @@ func startAutoMitigation() {
 			log.Printf("[Auto-Mitigation] Lỗi cập nhật config_map: %v", err)
 		}
 
+		// Quét dọn / Mitigate
 		blockedIPs, err := mapMgr.ScanAndMitigate(currentPPSThreshold, currentBPSThreshold)
 		if err != nil {
 			log.Printf("[Auto-Mitigation] Lỗi quét map: %v", err)
 			continue
 		}
 		for _, ip := range blockedIPs {
-			log.Printf("[Auto-Mitigation] ĐÃ CHẶN IP NGUỒN TẤN CÔNG (Spam vượt ngưỡng): %s", ip)
-			// Đồng bộ sự kiện tự động chặn lên các node khác trong cluster
+			log.Printf("[Auto-Mitigation] ĐÃ CHẶN IP NGUỒN TẤN CÔNG (Spam vượt ngưỡng %d PPS): %s", currentPPSThreshold, ip)
 			syncBlacklistEvent(http.MethodPost, ip)
-			// Ghi log sự kiện giảm nhẹ tấn công
 			writeMitigationLog("mitigation_block", ip, "Traffic threshold exceeded", currentPPSThreshold)
+		}
+
+		// Aggressive Age-out khi RAM hoặc CPU cao (Level >= 3)
+		if currentLevel >= 3 {
+			// Thu dọn mạnh hơn, giảm thời gian TTL
+			ttl = 300 // Các IP cũ nếu bị chặn quá 5 phút sẽ được thả để cứu bộ nhớ
 		}
 
 		// [Blacklist TTL/Expiry] Quét và tự động mở khóa IP hết hạn block
 		blacklistCount := mapMgr.GetBlacklistCount()
-		ttl := uint64(3600) // TTL mặc định 1 giờ (3600 giây)
 		if blacklistCount > 58982 { // 90% của 65536
 			log.Printf("[Map Protection] Cảnh báo: ip_blacklist_map gần đầy (%d/65536). Kích hoạt dọn dẹp khẩn cấp, hạ TTL xuống 5 phút.", blacklistCount)
 			ttl = 300 // 5 phút (300 giây)
