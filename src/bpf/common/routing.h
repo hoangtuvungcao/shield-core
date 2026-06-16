@@ -61,11 +61,6 @@ static __always_inline int encapsulate_ipip(struct xdp_md *ctx, struct ethhdr *e
         if (dport == 22 || dport == 9090) {
             return XDP_PASS;
         }
-        // Kiểm tra cổng chạy động trên server
-        u8 *active = bpf_map_lookup_elem(&local_ports_map, &dport);
-        if (active) {
-            return XDP_PASS;
-        }
     }
 
     // 1. Mở rộng khoảng trống 20 bytes (kích thước iphdr) phía trước gói tin hiện tại

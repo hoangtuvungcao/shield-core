@@ -25,8 +25,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-
-	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
