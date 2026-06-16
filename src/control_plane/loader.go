@@ -31,6 +31,7 @@ type bpfObjects struct {
 	VipStats         *ebpf.Map     `ebpf:"vip_stats_map"`
 	LocalPorts       *ebpf.Map     `ebpf:"local_ports_map"`
 	ConfigMap        *ebpf.Map     `ebpf:"config_map"`
+	RingStatsMap     *ebpf.Map     `ebpf:"ring_stats_map"`
 }
 
 func LoadXDPProgram(ifaceName string, objPath string) (*XDPProgram, error) {
@@ -79,6 +80,7 @@ func LoadXDPProgram(ifaceName string, objPath string) (*XDPProgram, error) {
 	objs.XsksMap.Pin("/sys/fs/bpf/shield_core/xsks_map")
 	objs.A2sInfo.Pin("/sys/fs/bpf/shield_core/a2s_info")
 	objs.IpBlacklist.Pin("/sys/fs/bpf/shield_core/ip_blacklist_map")
+	objs.RingStatsMap.Pin("/sys/fs/bpf/shield_core/ring_stats_map")
 
 	// Xóa XDP cũ (nếu có) để tránh lỗi file exists
 	netlink.LinkSetXdpFdWithFlags(link_dev, -1, 0)

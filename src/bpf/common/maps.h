@@ -145,5 +145,16 @@ struct {
     __uint(max_entries, 4);
 } config_map SEC(".maps");
 
+// [MAP 11]: AF_XDP Ring Stats Map
+// Do Fastpath cập nhật định kỳ, Go Control Plane đọc để tính Ring Pressure
+// Key: 0
+// Value: ring_stats_t
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, u32);
+    __type(value, ring_stats_t);
+    __uint(max_entries, 1);
+} ring_stats_map SEC(".maps");
+
 
 

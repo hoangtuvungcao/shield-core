@@ -69,10 +69,19 @@ struct a2s_info_val {
     unsigned int challenge_set : 1;
 } __attribute__((packed));
 
+typedef struct {
+    uint32_t rx_fill_pct;
+    uint32_t tx_fill_pct;
+    uint32_t fill_ring_pct;
+    uint32_t completion_ring_pct;
+    uint64_t timestamp_ns;
+} ring_stats_t;
+
 // FDs của các BPF Map lấy từ sysfs
 static int xsks_map_fd = -1;
 static int a2s_info_fd = -1;
 static int ip_blacklist_fd = -1;
+static int ring_stats_fd = -1;
 
 static volatile int stop = 0;
 static char iface_name[IFNAMSIZ] = "lo";
@@ -643,6 +652,48 @@ void *worker_thread_func(void *arg) {
     return NULL;
 }
 
+static void *ring_monitor_thread_func(void *arg) {
+    while (!stop) {
+        if (ring_stats_fd >= 0) {
+            ring_stats_t stats = {0};
+            
+            for (int i = 0; i < num_queues; i++) {
+                if (thread_contexts[i].xsk == NULL || thread_contexts[i].umem == NULL) continue;
+                
+                struct xsk_ring_cons *rx = &thread_contexts[i].xsk->rx;
+                struct xsk_ring_prod *tx = &thread_contexts[i].xsk->tx;
+                struct xsk_ring_prod *fq = &thread_contexts[i].umem->fq;
+                struct xsk_ring_cons *cq = &thread_contexts[i].umem->cq;
+                
+                // rx fill
+                uint32_t rx_fill = *rx->producer - *rx->consumer;
+                uint32_t rx_pct = (rx->size > 0) ? (rx_fill * 100) / rx->size : 0;
+                if (rx_pct > stats.rx_fill_pct) stats.rx_fill_pct = rx_pct;
+                
+                // tx fill
+                uint32_t tx_fill = *tx->producer - *tx->consumer;
+                uint32_t tx_pct = (tx->size > 0) ? (tx_fill * 100) / tx->size : 0;
+                if (tx_pct > stats.tx_fill_pct) stats.tx_fill_pct = tx_pct;
+                
+                // fq fill
+                uint32_t fq_fill = *fq->producer - *fq->consumer;
+                uint32_t fq_pct = (fq->size > 0) ? (fq_fill * 100) / fq->size : 0;
+                if (fq_pct > stats.fill_ring_pct) stats.fill_ring_pct = fq_pct;
+                
+                // cq fill
+                uint32_t cq_fill = *cq->producer - *cq->consumer;
+                uint32_t cq_pct = (cq->size > 0) ? (cq_fill * 100) / cq->size : 0;
+                if (cq_pct > stats.completion_ring_pct) stats.completion_ring_pct = cq_pct;
+            }
+            stats.timestamp_ns = get_time_ns();
+            uint32_t key = 0;
+            bpf_map_update_elem(ring_stats_fd, &key, &stats, BPF_ANY);
+        }
+        usleep(100000); // 100ms
+    }
+    return NULL;
+}
+
 int main(int argc, char **argv) {
     if (argc > 1) {
         strncpy(iface_name, argv[1], IFNAMSIZ - 1);
@@ -672,6 +723,7 @@ int main(int argc, char **argv) {
     xsks_map_fd = bpf_obj_get("/sys/fs/bpf/shield_core/xsks_map");
     a2s_info_fd = bpf_obj_get("/sys/fs/bpf/shield_core/a2s_info");
     ip_blacklist_fd = bpf_obj_get("/sys/fs/bpf/shield_core/ip_blacklist_map");
+    ring_stats_fd = bpf_obj_get("/sys/fs/bpf/shield_core/ring_stats_map");
 
     if (xsks_map_fd < 0 || a2s_info_fd < 0 || ip_blacklist_fd < 0) {
         fprintf(stderr, "Lỗi: Không tìm thấy các BPF map pinned tại /sys/fs/bpf/shield_core/. Vui lòng chạy Control Plane trước!\n");
@@ -684,6 +736,7 @@ int main(int argc, char **argv) {
 
     pthread_t io_threads[MAX_CPUS];
     pthread_t worker_threads[MAX_CPUS];
+    pthread_t ring_monitor_thread;
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
@@ -734,6 +787,9 @@ int main(int argc, char **argv) {
         pthread_create(&worker_threads[i], NULL, worker_thread_func, &thread_contexts[i]);
     }
 
+    // 4. Khởi chạy luồng giám sát Ring Pressure
+    pthread_create(&ring_monitor_thread, NULL, ring_monitor_thread_func, NULL);
+
     printf("Hệ thống AF_XDP Fastpath đã sẵn sàng phục vụ.\n");
 
     while (!stop) {
@@ -752,10 +808,12 @@ int main(int argc, char **argv) {
         free(thread_contexts[i].xsk);
         free(thread_contexts[i].umem);
     }
+    pthread_join(ring_monitor_thread, NULL);
 
     close(xsks_map_fd);
     close(a2s_info_fd);
     close(ip_blacklist_fd);
+    if (ring_stats_fd >= 0) close(ring_stats_fd);
 
     return 0;
 }

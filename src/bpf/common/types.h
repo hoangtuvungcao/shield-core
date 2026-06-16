@@ -43,3 +43,12 @@ struct a2s_info_val
     unsigned char challenge[4];
     unsigned int challenge_set : 1;
 } typedef a2s_info_val_t;
+
+// Struct lưu thông tin Ring Pressure của AF_XDP (do C Fastpath ghi, Go Control Plane đọc)
+struct ring_stats {
+    u32 rx_fill_pct;
+    u32 tx_fill_pct;
+    u32 fill_ring_pct;
+    u32 completion_ring_pct;
+    u64 timestamp_ns;
+} typedef ring_stats_t;

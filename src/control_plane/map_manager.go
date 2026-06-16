@@ -637,3 +637,22 @@ func (m *MapManager) UpdateRateLimits(pps, bps uint64) error {
 
 	return nil
 }
+
+type RingStatsVal struct {
+	RxFillPct         uint32
+	TxFillPct         uint32
+	FillRingPct       uint32
+	CompletionRingPct uint32
+	TimestampNs       uint64
+}
+
+// GetRingStats đọc thông số Ring Pressure từ AF_XDP
+func (m *MapManager) GetRingStats() (RingStatsVal, error) {
+	var val RingStatsVal
+	if m.prog.objs.RingStatsMap == nil {
+		return val, fmt.Errorf("RingStatsMap chưa được nạp")
+	}
+	var key uint32 = 0
+	err := m.prog.objs.RingStatsMap.Lookup(&key, &val)
+	return val, err
+}
