@@ -120,10 +120,8 @@ int xdp_prog_main(struct xdp_md *ctx)
             break;
     }
 
-    // [CRITICAL] Bỏ qua toàn bộ GeoIP/RateLimit cho lưu lượng quản trị (SSH và API)
-    if (dport == 22 || dport == 9090) {
-        return XDP_PASS;
-    }
+    // Đã xóa bỏ đặc quyền bypass cho port 22 và 9090
+    // Toàn bộ lưu lượng quản trị hiện nay đều phải tuân thủ GeoIP và Rate Limit
 
     // Đọc GeoIP Policy từ config_map
     u32 policy_key = 2;
@@ -166,19 +164,17 @@ int xdp_prog_main(struct xdp_md *ctx)
     // Áp dụng cho UDP, ICMP và TCP non-SYN (ACK Flood / RST Flood protection)
     // TCP SYN packets được xử lý riêng bởi SYN Cookie phía dưới
     if (protocol == IPPROTO_UDP || protocol == IPPROTO_ICMP) {
-        if (dport != 22 && dport != 9090) {
-            u16 pkt_len = data_end - data;
-            u64 now = bpf_ktime_get_ns();
-            
-            if (check_rate_limit(src_ip, pkt_len, now) == 1) {
-                u32 drop_key = 1;
-                u64 *drop_stats = bpf_map_lookup_elem(&stats_map, &drop_key);
-                if (drop_stats) {
-                    (*drop_stats)++;
-                }
-                update_vip_stats(iph->daddr, 1);
-                return XDP_DROP;
+        u16 pkt_len = data_end - data;
+        u64 now = bpf_ktime_get_ns();
+        
+        if (check_rate_limit(src_ip, pkt_len, now) == 1) {
+            u32 drop_key = 1;
+            u64 *drop_stats = bpf_map_lookup_elem(&stats_map, &drop_key);
+            if (drop_stats) {
+                (*drop_stats)++;
             }
+            update_vip_stats(iph->daddr, 1);
+            return XDP_DROP;
         }
     }
 
@@ -186,18 +182,16 @@ int xdp_prog_main(struct xdp_md *ctx)
     // Trên Ubuntu 20.04 (Kernel 5.4), bpf_tcp_gen_syncookie chưa được hỗ trợ.
     // Thay vì SYN Cookie, ta áp dụng Rate Limit cho TOÀN BỘ gói TCP (cả SYN và ACK).
     if (protocol == IPPROTO_TCP && tcph != NULL) {
-        if (dport != 22 && dport != 9090) {
-            u16 pkt_len = data_end - data;
-            u64 now = bpf_ktime_get_ns();
-            if (check_rate_limit(src_ip, pkt_len, now) == 1) {
-                u32 drop_key = 1;
-                u64 *drop_stats = bpf_map_lookup_elem(&stats_map, &drop_key);
-                if (drop_stats) {
-                    (*drop_stats)++;
-                }
-                update_vip_stats(iph->daddr, 1);
-                return XDP_DROP;
+        u16 pkt_len = data_end - data;
+        u64 now = bpf_ktime_get_ns();
+        if (check_rate_limit(src_ip, pkt_len, now) == 1) {
+            u32 drop_key = 1;
+            u64 *drop_stats = bpf_map_lookup_elem(&stats_map, &drop_key);
+            if (drop_stats) {
+                (*drop_stats)++;
             }
+            update_vip_stats(iph->daddr, 1);
+            return XDP_DROP;
         }
     }
 
