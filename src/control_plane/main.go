@@ -31,7 +31,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-
 func generateSelfSignedCert(certPath, keyPath string) error {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -142,7 +141,6 @@ func main() {
 	os.MkdirAll(filepath.Dir(certPath), 0755)
 	ensureCertificatesExist(certPath, keyPath)
 
-
 	// Khởi tạo GeoIPManager (Hỗ trợ Degraded Mode)
 	geoIPMgr = InitGeoIPManager(config.GeoIP.AsnDBPath, config.GeoIP.CountryDBPath)
 	defer geoIPMgr.Close()
@@ -185,6 +183,9 @@ func main() {
 		// Khởi tạo persistence và khôi phục state từ lần chạy trước
 		initPersistence()
 		restoreRulesState()
+		// [BUG FIX] Sau khi restore state, BPF config_map (ARRAY) đã reset về 0
+		// Cần tính lại wlist_count để XDP biết danh sách GeoIP có rỗng không
+		mapMgr.UpdateGeoRuleCount()
 
 		// Khởi chạy Auto-Mitigation Engine chạy ngầm
 		go startAutoMitigation()
@@ -218,8 +219,8 @@ func main() {
 
 	// API Rate Limiter (per-IP, 60 requests/phút)
 	type rateLimitEntry struct {
-		count    int
-		resetAt  time.Time
+		count   int
+		resetAt time.Time
 	}
 	var rateLimitMap sync.Map
 	rateLimitMiddleware := func(next http.HandlerFunc) http.HandlerFunc {
@@ -314,18 +315,20 @@ func main() {
 		} else {
 			// Fallback
 			unit := uint64(sysInfo.Unit)
-			if unit == 0 { unit = 1 }
+			if unit == 0 {
+				unit = 1
+			}
 			totalRam = uint64(sysInfo.Totalram) * unit
 			usedRam = totalRam - (uint64(sysInfo.Freeram) * unit)
 			freeRam = uint64(sysInfo.Freeram) * unit
 		}
 
 		res := map[string]interface{}{
-			"status":      status,
-			"uptime_sec":  int(time.Since(startTime).Seconds()),
-			"xdp_loaded":  xdpLoaded,
-			"geoip":       geoIPStatus,
-			"version":     "1.0.0",
+			"status":     status,
+			"uptime_sec": int(time.Since(startTime).Seconds()),
+			"xdp_loaded": xdpLoaded,
+			"geoip":      geoIPStatus,
+			"version":    "1.0.0",
 			"system": map[string]interface{}{
 				"ram_total": totalRam,
 				"ram_used":  usedRam,
@@ -382,7 +385,6 @@ func main() {
 			log.Fatalf("API Server lỗi: %v", err)
 		}
 	}()
-
 
 	// Chờ tín hiệu dừng (Ctrl+C / SIGTERM)
 	sigCh := make(chan os.Signal, 1)
@@ -509,7 +511,7 @@ func calculateCPUUsage(prev, curr cpuStats) float64 {
 // startAutoMitigation chạy vòng lặp quét IP spam và tự động cách ly (FSM 6 Level)
 func startAutoMitigation() {
 	log.Println("Đang khởi động Auto-Mitigation Engine v2.1 (SRE Edition)...")
-	
+
 	var prevCPU cpuStats
 	if stats, err := getCPUStats(); err == nil {
 		prevCPU = stats
@@ -519,12 +521,15 @@ func startAutoMitigation() {
 	if iface == "" {
 		iface = "eth0"
 	}
-	
+
+	// Reset prevDrops/prevPkts từ giá trị hiện tại để tránh false-positive drop ratio ngay khi khởi động
 	var prevDrops, prevPkts uint64
 	if d, p, err := getQueueStats(iface); err == nil {
 		prevDrops = d
 		prevPkts = p
 	}
+	// Warm-up 3s: Ignore first 3 cycles to let drop ratio stabilize
+	warmupCycles := 3
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -534,6 +539,15 @@ func startAutoMitigation() {
 
 	for range ticker.C {
 		if mapMgr == nil {
+			continue
+		}
+		// Warm-up: bỏ qua thiếu số chu kỳ đầu để drop ratio khởi tạo chuẩn
+		if warmupCycles > 0 {
+			warmupCycles--
+			if d, p, err := getQueueStats(iface); err == nil {
+				prevDrops = d
+				prevPkts = p
+			}
 			continue
 		}
 
@@ -553,8 +567,12 @@ func startAutoMitigation() {
 		if currDrops, currPkts, err := getQueueStats(iface); err == nil {
 			deltaDrops := currDrops - prevDrops
 			deltaPkts := currPkts - prevPkts
-			if deltaDrops+deltaPkts > 0 {
+			// Bảo vệ vòng lặp phản hồi: chỉ tính drop ratio khi có ít nhất 100 packet
+			// Tránh false-positive khi server ít traffic mà drop 1-2 packet = 100%
+			if deltaDrops+deltaPkts >= 100 {
 				queueDropRatio = float64(deltaDrops) / float64(deltaDrops+deltaPkts)
+			} else {
+				queueDropRatio = 0.0 // Không đủ lưu lượng mẫu, bỏ qua
 			}
 			prevDrops = currDrops
 			prevPkts = currPkts
@@ -574,11 +592,19 @@ func startAutoMitigation() {
 		// Ring Pressure Awareness
 		var maxRingPct uint32 = 0
 		if ringStats, err := mapMgr.GetRingStats(); err == nil {
-			if ringStats.RxFillPct > maxRingPct { maxRingPct = ringStats.RxFillPct }
-			if ringStats.TxFillPct > maxRingPct { maxRingPct = ringStats.TxFillPct }
-			if ringStats.FillRingPct > maxRingPct { maxRingPct = ringStats.FillRingPct }
-			if ringStats.CompletionRingPct > maxRingPct { maxRingPct = ringStats.CompletionRingPct }
-			
+			if ringStats.RxFillPct > maxRingPct {
+				maxRingPct = ringStats.RxFillPct
+			}
+			if ringStats.TxFillPct > maxRingPct {
+				maxRingPct = ringStats.TxFillPct
+			}
+			if ringStats.FillRingPct > maxRingPct {
+				maxRingPct = ringStats.FillRingPct
+			}
+			if ringStats.CompletionRingPct > maxRingPct {
+				maxRingPct = ringStats.CompletionRingPct
+			}
+
 			// Export Prometheus metrics
 			metricRxRingPressure.Set(float64(ringStats.RxFillPct))
 			metricTxRingPressure.Set(float64(ringStats.TxFillPct))
@@ -589,21 +615,70 @@ func startAutoMitigation() {
 		// Tính toán Level cho từng thành phần (Max Calculation)
 		levelCPU, levelRAM, levelQueue, levelMap, levelRing := 0, 0, 0, 0, 0
 
-		if cpuPercent > 95.0 { levelCPU = 4 } else if cpuPercent > 90.0 { levelCPU = 3 } else if cpuPercent > 80.0 { levelCPU = 2 } else if cpuPercent > 60.0 { levelCPU = 1 }
-		if ramPercent > 95.0 { levelRAM = 4 } else if ramPercent > 92.0 { levelRAM = 3 } else if ramPercent > 85.0 { levelRAM = 2 } else if ramPercent > 70.0 { levelRAM = 1 }
-		if queueDropRatio > 0.10 { levelQueue = 4 } else if queueDropRatio > 0.05 { levelQueue = 3 } else if queueDropRatio > 0.03 { levelQueue = 2 } else if queueDropRatio > 0.01 { levelQueue = 1 }
-		if maxMapUsage > 95.0 { levelMap = 4 } else if maxMapUsage > 90.0 { levelMap = 3 } else if maxMapUsage > 80.0 { levelMap = 2 } else if maxMapUsage > 60.0 { levelMap = 1 }
-		if maxRingPct > 95 { levelRing = 4 } else if maxRingPct > 90 { levelRing = 3 } else if maxRingPct > 80 { levelRing = 2 } else if maxRingPct > 60 { levelRing = 1 }
+		if cpuPercent > 95.0 {
+			levelCPU = 4
+		} else if cpuPercent > 90.0 {
+			levelCPU = 3
+		} else if cpuPercent > 80.0 {
+			levelCPU = 2
+		} else if cpuPercent > 60.0 {
+			levelCPU = 1
+		}
+		if ramPercent > 95.0 {
+			levelRAM = 4
+		} else if ramPercent > 92.0 {
+			levelRAM = 3
+		} else if ramPercent > 85.0 {
+			levelRAM = 2
+		} else if ramPercent > 70.0 {
+			levelRAM = 1
+		}
+		if queueDropRatio > 0.10 {
+			levelQueue = 4
+		} else if queueDropRatio > 0.05 {
+			levelQueue = 3
+		} else if queueDropRatio > 0.03 {
+			levelQueue = 2
+		} else if queueDropRatio > 0.01 {
+			levelQueue = 1
+		}
+		if maxMapUsage > 95.0 {
+			levelMap = 4
+		} else if maxMapUsage > 90.0 {
+			levelMap = 3
+		} else if maxMapUsage > 80.0 {
+			levelMap = 2
+		} else if maxMapUsage > 60.0 {
+			levelMap = 1
+		}
+		if maxRingPct > 95 {
+			levelRing = 4
+		} else if maxRingPct > 90 {
+			levelRing = 3
+		} else if maxRingPct > 80 {
+			levelRing = 2
+		} else if maxRingPct > 60 {
+			levelRing = 1
+		}
 
 		targetLevel := levelCPU
-		if levelRAM > targetLevel { targetLevel = levelRAM }
-		if levelQueue > targetLevel { targetLevel = levelQueue }
-		if levelMap > targetLevel { targetLevel = levelMap }
-		if levelRing > targetLevel { targetLevel = levelRing }
+		if levelRAM > targetLevel {
+			targetLevel = levelRAM
+		}
+		if levelQueue > targetLevel {
+			targetLevel = levelQueue
+		}
+		if levelMap > targetLevel {
+			targetLevel = levelMap
+		}
+		if levelRing > targetLevel {
+			targetLevel = levelRing
+		}
 
 		// Emergency Trigger (Bỏ qua Hysteresis, Survival ngay lập tức)
+		// queueDropRatio ngưỡng 0.50 (50%) để tránh NIC fluctuation bình thường kích hoạt Emergency
 		emergency := false
-		if cpuPercent > 98.0 || ramPercent > 98.0 || maxMapUsage > 99.0 || queueDropRatio > 0.15 || maxRingPct > 98 {
+		if cpuPercent > 98.0 || ramPercent > 98.0 || maxMapUsage > 99.0 || queueDropRatio > 0.50 || maxRingPct > 98 {
 			targetLevel = 4
 			emergency = true
 		}
@@ -616,35 +691,35 @@ func startAutoMitigation() {
 			log.Printf("[FSM] EMERGENCY TRIGGER! Ép buộc Survival (Level 4) ngay lập tức! (CPU: %.1f%%, RAM: %.1f%%, Map: %.1f%%, Drop: %.1f%%, Ring: %d%%)", cpuPercent, ramPercent, maxMapUsage, queueDropRatio*100, maxRingPct)
 		} else if targetLevel > currentLevel {
 			if currentLevel == 5 {
-			    // Đang Recovery mà bị tấn công lại -> Cancel Recovery, nhảy lên Level mới ngay
-			    currentLevel = targetLevel
-			    levelHoldTime = 5
-			    log.Printf("[FSM] Tấn công tái diễn! Huỷ Recovery, tăng Level %d (CPU: %.1f%%)", currentLevel, cpuPercent)
+				// Đang Recovery mà bị tấn công lại -> Cancel Recovery, nhảy lên Level mới ngay
+				currentLevel = targetLevel
+				levelHoldTime = 5
+				log.Printf("[FSM] Tấn công tái diễn! Huỷ Recovery, tăng Level %d (CPU: %.1f%%)", currentLevel, cpuPercent)
 			} else {
-			    if levelHoldTime > 0 {
-			        levelHoldTime--
-			    } else {
-			        currentLevel = targetLevel
-			        levelHoldTime = 5 // Promote: Giữ 5s
-			        log.Printf("[FSM] Tăng Level phòng thủ lên %d", currentLevel)
-			    }
+				if levelHoldTime > 0 {
+					levelHoldTime--
+				} else {
+					currentLevel = targetLevel
+					levelHoldTime = 5 // Promote: Giữ 5s
+					log.Printf("[FSM] Tăng Level phòng thủ lên %d", currentLevel)
+				}
 			}
 		} else if targetLevel < currentLevel {
 			if levelHoldTime > 0 {
 				levelHoldTime--
 			} else {
 				if currentLevel > 0 && currentLevel <= 4 && targetLevel == 0 {
-				    currentLevel = 5 // Recovery
-				    levelHoldTime = 60 // Cooldown 60s
-				    log.Printf("[FSM] Mức nguy hiểm đã qua, vào trạng thái Recovery (Level 5) đếm ngược 60s")
+					currentLevel = 5   // Recovery
+					levelHoldTime = 60 // Cooldown 60s
+					log.Printf("[FSM] Mức nguy hiểm đã qua, vào trạng thái Recovery (Level 5) đếm ngược 60s")
 				} else if currentLevel == 5 {
-				    currentLevel = 0
-				    levelHoldTime = 0
-				    log.Printf("[FSM] Kết thúc Recovery, trở về Normal (Level 0)")
+					currentLevel = 0
+					levelHoldTime = 0
+					log.Printf("[FSM] Kết thúc Recovery, trở về Normal (Level 0)")
 				} else {
-				    currentLevel = targetLevel
-				    levelHoldTime = 30 // Demote: Giữ 30s
-				    log.Printf("[FSM] Hạ nhiệt độ phòng thủ xuống Level %d", currentLevel)
+					currentLevel = targetLevel
+					levelHoldTime = 30 // Demote: Giữ 30s
+					log.Printf("[FSM] Hạ nhiệt độ phòng thủ xuống Level %d", currentLevel)
 				}
 			}
 		}
@@ -672,11 +747,11 @@ func startAutoMitigation() {
 		case 3:
 			currentPPSThreshold = 500
 			currentBPSThreshold = 1 * 1024 * 1024 // 1 MB/s
-			ttl = 86400 // 24 hours
+			ttl = 86400                           // 24 hours
 		case 4:
 			currentPPSThreshold = 300
 			currentBPSThreshold = 500 * 1024 // 500 KB/s
-			ttl = 86400 // 24 hours
+			ttl = 86400                      // 24 hours
 		case 5:
 			currentPPSThreshold = 3000
 			currentBPSThreshold = 5 * 1024 * 1024
@@ -686,11 +761,16 @@ func startAutoMitigation() {
 		// Adaptive Scan Budget
 		scanBudget := 500
 		switch currentLevel {
-		case 1: scanBudget = 1000
-		case 2: scanBudget = 2500
-		case 3: scanBudget = 5000
-		case 4: scanBudget = 10000
-		case 5: scanBudget = 2000
+		case 1:
+			scanBudget = 1000
+		case 2:
+			scanBudget = 2500
+		case 3:
+			scanBudget = 5000
+		case 4:
+			scanBudget = 10000
+		case 5:
+			scanBudget = 2000
 		}
 		// Cắt giảm budget nếu CPU quá cao để tránh bồi thêm tải vào CPU
 		if cpuPercent > 90.0 && scanBudget > 3000 {
@@ -776,7 +856,7 @@ func handlePrometheusMetrics(w http.ResponseWriter, r *http.Request) {
 		if geoIPMgr.countryLoaded {
 			countryVal = 1
 		}
-		
+
 		fmt.Fprintf(w, "# HELP shield_core_geoip_asn_loaded Trạng thái nạp ASN Database (1=Loaded, 0=Not Loaded)\n")
 		fmt.Fprintf(w, "# TYPE shield_core_geoip_asn_loaded gauge\n")
 		fmt.Fprintf(w, "shield_core_geoip_asn_loaded %d\n", asnVal)
@@ -829,7 +909,7 @@ func handlePrometheusMetrics(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "shield_core_map_max_entries{map=\"%s\"} %d\n", mh.Name, mh.MaxEntries)
 		}
 	}
-	
+
 	// Xuất các metrics từ Prometheus client
 	promhttp.Handler().ServeHTTP(w, r)
 }
@@ -955,7 +1035,7 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 		"pass_count": pass,
 		"drop_count": drop,
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(res)
 }
@@ -1518,7 +1598,7 @@ func handleWhitelist(w http.ResponseWriter, r *http.Request) {
 		}
 		fmt.Fprintf(w, "Đã thêm IP %s vào Whitelist\n", ip)
 		writeMitigationLog("WHITELIST_ADD", ip, "User added to whitelist", 0)
-		
+
 		if r.URL.Query().Get("sync") != "true" {
 			syncIPEvent("whitelist", http.MethodPost, ip)
 		}
@@ -1530,7 +1610,7 @@ func handleWhitelist(w http.ResponseWriter, r *http.Request) {
 		}
 		fmt.Fprintf(w, "Đã xoá IP %s khỏi Whitelist\n", ip)
 		writeMitigationLog("WHITELIST_REMOVE", ip, "User removed from whitelist", 0)
-		
+
 		if r.URL.Query().Get("sync") != "true" {
 			syncIPEvent("whitelist", http.MethodDelete, ip)
 		}
@@ -1543,7 +1623,7 @@ func handleWhitelist(w http.ResponseWriter, r *http.Request) {
 func handleLogs(w http.ResponseWriter, r *http.Request) {
 	logDir := resolvePath("logs")
 	logPath := filepath.Join(logDir, "mitigation.log")
-	
+
 	// Trả về mảng JSON rỗng nếu chưa có log
 	if _, err := os.Stat(logPath); os.IsNotExist(err) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1560,7 +1640,7 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 	var result []json.RawMessage
-	
+
 	// Đọc từ cuối lên
 	for i := len(lines) - 1; i >= 0 && len(result) < 100; i-- {
 		line := strings.TrimSpace(lines[i])

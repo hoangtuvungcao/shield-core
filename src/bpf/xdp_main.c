@@ -164,13 +164,29 @@ int xdp_prog_main(struct xdp_md *ctx)
 
 
     // 4. Các Pipeline sẽ được gắn vào đây:
-    
+
+    // [PIPELINE PORT-BYPASS] Kiểm tra local_ports_map trước Rate Limiter
+    // Các port đang lắng nghe trên máy chủ (ssh, game, web) được miễn Rate Limit
+    // NHƯNG vẫn phải qua GeoIP và Blacklist ở trên để bảo vệ bình thường
+    u8 bypass_ratelimit = 0;
+    if (dport != 0) {
+        u32 port_key = (u32)dport;
+        // Cứng: Port 22 (SSH) và 9090 (API) luôn bypass rate limit
+        if (dport == 22 || dport == 9090) {
+            bypass_ratelimit = 1;
+        } else {
+            u8 *local_flag = bpf_map_lookup_elem(&local_ports_map, &port_key);
+            if (local_flag && *local_flag == 1) {
+                bypass_ratelimit = 1;
+            }
+        }
+    }
+
     // [Pipeline 1] L3/L4 Firewall (Blacklist, Rate Limit)
-    
+
     // [Pipeline 1.5] L4 Rate Limiting
     // Áp dụng cho UDP, ICMP và TCP non-SYN (ACK Flood / RST Flood protection)
-    // TCP SYN packets được xử lý riêng bởi SYN Cookie phía dưới
-    if (protocol == IPPROTO_UDP || protocol == IPPROTO_ICMP) {
+    if (!bypass_ratelimit && (protocol == IPPROTO_UDP || protocol == IPPROTO_ICMP)) {
         u16 pkt_len = data_end - data;
         u64 now = bpf_ktime_get_ns();
         
@@ -188,7 +204,7 @@ int xdp_prog_main(struct xdp_md *ctx)
     // [Pipeline 1.6] TCP Flood Protection (Fallback Kernel 5.4)
     // Trên Ubuntu 20.04 (Kernel 5.4), bpf_tcp_gen_syncookie chưa được hỗ trợ.
     // Thay vì SYN Cookie, ta áp dụng Rate Limit cho TOÀN BỘ gói TCP (cả SYN và ACK).
-    if (protocol == IPPROTO_TCP && tcph != NULL) {
+    if (!bypass_ratelimit && protocol == IPPROTO_TCP && tcph != NULL) {
         u16 pkt_len = data_end - data;
         u64 now = bpf_ktime_get_ns();
         if (check_rate_limit(src_ip, pkt_len, now) == 1) {
