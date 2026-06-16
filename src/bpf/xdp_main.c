@@ -52,17 +52,21 @@ int xdp_prog_main(struct xdp_md *ctx)
         return XDP_DROP;
     }
     
-    // [Early Drop Blacklists] - Chặn sớm trước khi phân tích tiếp
+    // [Early Drop Blacklists & Whitelists]
     u32 src_ip = iph->saddr;
 
-    // Tra cứu trong whitelist map
-    u64 *whitelisted = bpf_map_lookup_elem(&ip_whitelist_map, &src_ip);
+    struct lpm_trie_key trie_key;
+    trie_key.prefix_len = 32;
+    trie_key.data = src_ip;
+
+    // Tra cứu trong CIDR whitelist map
+    u64 *whitelisted = bpf_map_lookup_elem(&cidr_whitelist_map, &trie_key);
     if (whitelisted) {
         return XDP_PASS;
     }
     
-    // Tra cứu trong blacklist map
-    u64 *blocked = bpf_map_lookup_elem(&ip_blacklist_map, &src_ip);
+    // Tra cứu trong CIDR blacklist map
+    u64 *blocked = bpf_map_lookup_elem(&cidr_blacklist_map, &trie_key);
     if (blocked) {
         u32 drop_key = 1;
         u64 *drop_stats = bpf_map_lookup_elem(&stats_map, &drop_key);
@@ -121,46 +125,7 @@ int xdp_prog_main(struct xdp_md *ctx)
     }
 
     // Đã xóa bỏ đặc quyền bypass cho port 22 và 9090
-    // Toàn bộ lưu lượng quản trị hiện nay đều phải tuân thủ GeoIP và Rate Limit
-
-    // Đọc GeoIP Policy từ config_map
-    u32 policy_key = 2;
-    u64 *policy_val = bpf_map_lookup_elem(&config_map, &policy_key);
-    u64 geoip_policy = policy_val ? *policy_val : 0; // 0 = Blacklist (default), 1 = Whitelist (Block all except)
-
-    // Tra cứu trong ASN/Country Blacklist Trie
-    struct lpm_trie_key trie_key;
-    trie_key.prefix_len = 32;
-    trie_key.data = src_ip;
-
-    if (geoip_policy == 0) {
-        // Blacklist mode: Nếu có trong map -> DROP
-        if (bpf_map_lookup_elem(&asn_blacklist_map, &trie_key) || 
-            bpf_map_lookup_elem(&country_blacklist_map, &trie_key)) {
-            u32 drop_key = 1;
-            u64 *drop_stats = bpf_map_lookup_elem(&stats_map, &drop_key);
-            if (drop_stats) (*drop_stats)++;
-            update_vip_stats(iph->daddr, 1);
-            return XDP_DROP;
-        }
-    } else {
-        // Whitelist mode: Nếu KHÔNG có trong map -> DROP
-        u32 wlist_count_key = 3;
-        u64 *wlist_count_val = bpf_map_lookup_elem(&config_map, &wlist_count_key);
-        u64 wlist_count = wlist_count_val ? *wlist_count_val : 0;
-
-        // Nếu Whitelist đang bật nhưng danh sách bị trống rỗng -> Fallback thành Allow All
-        if (wlist_count > 0) {
-            if (!bpf_map_lookup_elem(&asn_blacklist_map, &trie_key) && 
-                !bpf_map_lookup_elem(&country_blacklist_map, &trie_key)) {
-                u32 drop_key = 1;
-                u64 *drop_stats = bpf_map_lookup_elem(&stats_map, &drop_key);
-                if (drop_stats) (*drop_stats)++;
-                update_vip_stats(iph->daddr, 1);
-                return XDP_DROP;
-            }
-        }
-    }
+    // Toàn bộ lưu lượng quản trị hiện nay đều phải tuân thủ Rate Limit
 
 
     // 4. Các Pipeline sẽ được gắn vào đây:

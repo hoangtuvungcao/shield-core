@@ -5,30 +5,28 @@
 #include "types.h"
 
 // -------------------------------------------------------------
-// [MAP 1]: L3 IP Blacklist (IPv4)
-// Lưu trữ các IP độc hại. Nếu IP có trong map này, lập tức DROP.
-// Key: IPv4 Address (u32)
-// Value: Block expire timestamp hoặc simply u64 (count/timestamp)
+// [MAP 0]: CIDR Blacklist Map
+// Lưu trữ các dải IP và Quốc Gia bị chặn vĩnh viễn (LPM Trie)
 // -------------------------------------------------------------
 struct {
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __type(key, u32);
-    __type(value, u64);
-    __uint(max_entries, 65536); // Support up to 64k blocked IPs
-} ip_blacklist_map SEC(".maps");
+    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
+    __type(key, lpm_trie_key_t);
+    __type(value, u64); // Unix timestamp block
+    __uint(max_entries, 524288);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+} cidr_blacklist_map SEC(".maps");
 
 // -------------------------------------------------------------
-// [MAP 1.5]: L3 IP Whitelist (IPv4)
-// Nếu IP có trong map này, lập tức PASS (bỏ qua mọi rule chặn).
-// Key: IPv4 Address (u32)
-// Value: u64
+// [MAP 1]: CIDR Whitelist Map
+// Lưu trữ các dải IP và Quốc Gia được phép bypass rate limit
 // -------------------------------------------------------------
 struct {
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __type(key, u32);
-    __type(value, u64);
-    __uint(max_entries, 10240); // 10k whitelist IPs
-} ip_whitelist_map SEC(".maps");
+    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
+    __type(key, lpm_trie_key_t);
+    __type(value, u64); // Unix timestamp
+    __uint(max_entries, 524288);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+} cidr_whitelist_map SEC(".maps");
 
 // -------------------------------------------------------------
 // [MAP 2]: Telemetry Stats
@@ -92,28 +90,6 @@ struct {
     __type(value, a2s_info_val_t);
     __uint(max_entries, 1024);
 } a2s_info SEC(".maps");
-
-// [MAP 7]: ASN Blacklist Trie Map
-// Key: lpm_trie_key_t (prefix_len, data)
-// Value: u64 (action / block time)
-struct {
-    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
-    __type(key, lpm_trie_key_t);
-    __type(value, u64);
-    __uint(max_entries, 524288);
-    __uint(map_flags, BPF_F_NO_PREALLOC);
-} asn_blacklist_map SEC(".maps");
-
-// [MAP 8]: Country Blacklist Trie Map
-// Key: lpm_trie_key_t
-// Value: u64
-struct {
-    __uint(type, BPF_MAP_TYPE_LPM_TRIE);
-    __type(key, lpm_trie_key_t);
-    __type(value, u64);
-    __uint(max_entries, 524288);
-    __uint(map_flags, BPF_F_NO_PREALLOC);
-} country_blacklist_map SEC(".maps");
 
 // -------------------------------------------------------------
 // [MAP 9]: VIP Stats Map (Multi-tenant Billing)

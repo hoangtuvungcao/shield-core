@@ -162,9 +162,6 @@ function loadTab(tabId) {
         loadWhitelist();
     } else if (tabId === 'routing') {
         loadRouting();
-    } else if (tabId === 'geoip') {
-        loadASN();
-        loadCountry();
     } else if (tabId === 'logs') {
         loadLogs();
     }
@@ -186,7 +183,6 @@ function startAutoRefresh() {
     // Tải ngay lần đầu
     fetchHealth();
     fetchStats();
-    loadGeoPolicy();
     // Sau đó tự động cập nhật mỗi 2 giây
     refreshInterval = setInterval(() => {
         const activeTab = document.querySelector('.nav-item.active');
@@ -209,11 +205,14 @@ async function loadBlacklist() {
     try {
         const ips = await apiRequest('blacklist');
         if (!ips || ips.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="3" class="text-center">Không có IP nào bị chặn.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="3" class="text-center">Không có IP/Dải mạng nào bị chặn.</td></tr>';
             return;
         }
         tbody.innerHTML = '';
-        ips.forEach((ip, idx) => {
+        
+        // Render top 100 to prevent browser freeze if massive cidrs returned
+        const toRender = ips.slice(0, 100);
+        toRender.forEach((ip, idx) => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td>${idx + 1}</td>
@@ -222,6 +221,11 @@ async function loadBlacklist() {
             `;
             tbody.appendChild(tr);
         });
+        if (ips.length > 100) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td colspan="3" class="text-center text-secondary">... và ${ips.length - 100} dải mạng khác</td>`;
+            tbody.appendChild(tr);
+        }
     } catch (e) {
         tbody.innerHTML = `<tr><td colspan="3" class="text-center text-red">Lỗi tải dữ liệu: ${e.message}</td></tr>`;
     }
@@ -237,7 +241,9 @@ async function loadWhitelist() {
             return;
         }
         tbody.innerHTML = '';
-        ips.forEach((ip, idx) => {
+        
+        const toRender = ips.slice(0, 100);
+        toRender.forEach((ip, idx) => {
             const tr = document.createElement('tr');
             tr.innerHTML = `
                 <td>${idx + 1}</td>
@@ -246,6 +252,11 @@ async function loadWhitelist() {
             `;
             tbody.appendChild(tr);
         });
+        if (ips.length > 100) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td colspan="3" class="text-center text-secondary">... và ${ips.length - 100} dải mạng khác</td>`;
+            tbody.appendChild(tr);
+        }
     } catch (e) {
         tbody.innerHTML = `<tr><td colspan="3" class="text-center text-red">Lỗi tải dữ liệu: ${e.message}</td></tr>`;
     }
@@ -307,7 +318,7 @@ async function loadRouting() {
                 <td><span class="badge badge-success">${rt.vip}</span></td>
                 <td><code>${rt.backend_ip}</code></td>
                 <td>${typeBadge}</td>
-                <td><button class="btn btn-sm btn-danger" onclick="removeRoute('${rt.vip}', '${rt.backend_ip}', '${rt.tunnel_type}')"><i class="fa-solid fa-trash"></i></button></td>
+                <td><button class="btn btn-sm btn-danger" onclick="removeRoute('${rt.vip}', '${rt.backend_ip}', '${rt.tunnel_type}')"><i class="fa-solid fa-trash"></i> Xoá</button></td>
             `;
             tbody.appendChild(tr);
         });
@@ -316,67 +327,24 @@ async function loadRouting() {
     }
 }
 
-async function loadASN() {
-    const tbody = document.getElementById('asnTable');
-    tbody.innerHTML = '<tr><td colspan="2" class="text-center">Đang tải...</td></tr>';
-    try {
-        const list = await apiRequest('rules/asn');
-        if (!list || list.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="2" class="text-center">Trống.</td></tr>';
-            return;
-        }
-        tbody.innerHTML = '';
-        list.forEach(item => {
-            const tr = document.createElement('tr');
-            tr.innerHTML = `
-                <td><code>${item}</code></td>
-                <td><button class="btn btn-sm btn-danger" onclick="removeASN('${item}')"><i class="fa-solid fa-trash"></i></button></td>
-            `;
-            tbody.appendChild(tr);
-        });
-    } catch (e) {
-        tbody.innerHTML = `<tr><td colspan="2" class="text-center text-red">Lỗi tải dữ liệu: ${e.message}</td></tr>`;
-    }
-}
 
-async function loadCountry() {
-    const tbody = document.getElementById('countryTable');
-    tbody.innerHTML = '<tr><td colspan="2" class="text-center">Đang tải...</td></tr>';
-    try {
-        const list = await apiRequest('rules/country');
-        if (!list || list.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="2" class="text-center">Trống.</td></tr>';
-            return;
-        }
-        tbody.innerHTML = '';
-        list.forEach(item => {
-            const tr = document.createElement('tr');
-            tr.innerHTML = `
-                <td><code>${item}</code></td>
-                <td><button class="btn btn-sm btn-danger" onclick="removeCountry('${item}')"><i class="fa-solid fa-trash"></i></button></td>
-            `;
-            tbody.appendChild(tr);
-        });
-    } catch (e) {
-        tbody.innerHTML = `<tr><td colspan="2" class="text-center text-red">Lỗi tải dữ liệu: ${e.message}</td></tr>`;
-    }
-}
 
 // --- Hành động Sửa đổi Dữ liệu ---
 
 async function addBlacklistIP() {
-    const { value: ip } = await Swal.fire({
-        title: 'Chặn IP mới',
+    const { value: target } = await Swal.fire({
+        title: 'Chặn IP / Quốc Gia mới',
         input: 'text',
-        inputLabel: 'Nhập địa chỉ IPv4 cần chặn',
-        inputPlaceholder: 'Ví dụ: 192.168.1.100',
+        inputLabel: 'Nhập IP, Subnet, hoặc Mã Quốc Gia',
+        inputPlaceholder: 'Ví dụ: 192.168.1.100, 1.1.1.0/24, VN',
         showCancelButton: true
     });
     
-    if (ip) {
+    if (target) {
+        Swal.fire({ title: 'Đang xử lý...', didOpen: () => Swal.showLoading() });
         try {
-            await apiRequest(`blacklist?ip=${ip}`, 'POST');
-            Swal.fire('Thành công', `Đã thêm ${ip} vào Blacklist`, 'success');
+            const res = await apiRequest(`blacklist?target=${target}`, 'POST');
+            Swal.fire('Thành công', res, 'success');
             loadBlacklist();
         } catch (e) {
             Swal.fire('Lỗi', e.message, 'error');
@@ -384,10 +352,12 @@ async function addBlacklistIP() {
     }
 }
 
-async function removeBlacklist(ip) {
-    if (confirm(`Bạn có chắc chắn muốn bỏ chặn IP ${ip} không?`)) {
+async function removeBlacklist(target) {
+    if (confirm(`Bạn có chắc chắn muốn bỏ chặn ${target} không?`)) {
+        Swal.fire({ title: 'Đang xử lý...', didOpen: () => Swal.showLoading() });
         try {
-            await apiRequest(`blacklist?ip=${ip}`, 'DELETE');
+            const res = await apiRequest(`blacklist?target=${target}`, 'DELETE');
+            Swal.fire('Thành công', res, 'success');
             loadBlacklist();
         } catch (e) {
             Swal.fire('Lỗi', e.message, 'error');
@@ -396,18 +366,19 @@ async function removeBlacklist(ip) {
 }
 
 async function addWhitelistIP() {
-    const { value: ip } = await Swal.fire({
-        title: 'Thêm IP Ưu tiên',
+    const { value: target } = await Swal.fire({
+        title: 'Thêm IP / Quốc Gia Ưu tiên',
         input: 'text',
-        inputLabel: 'Nhập địa chỉ IPv4 cần Whitelist',
-        inputPlaceholder: 'Ví dụ: 8.8.8.8',
+        inputLabel: 'Nhập IP, Subnet, hoặc Mã Quốc Gia',
+        inputPlaceholder: 'Ví dụ: 8.8.8.8, 10.0.0.0/8, US',
         showCancelButton: true
     });
     
-    if (ip) {
+    if (target) {
+        Swal.fire({ title: 'Đang xử lý...', didOpen: () => Swal.showLoading() });
         try {
-            await apiRequest(`whitelist?ip=${ip}`, 'POST');
-            Swal.fire('Thành công', `Đã ưu tiên ${ip}`, 'success');
+            const res = await apiRequest(`whitelist?target=${target}`, 'POST');
+            Swal.fire('Thành công', res, 'success');
             loadWhitelist();
         } catch (e) {
             Swal.fire('Lỗi', e.message, 'error');
@@ -415,10 +386,12 @@ async function addWhitelistIP() {
     }
 }
 
-async function removeWhitelistIP(ip) {
-    if (confirm(`Xoá IP ${ip} khỏi danh sách ưu tiên?`)) {
+async function removeWhitelistIP(target) {
+    if (confirm(`Xoá ${target} khỏi danh sách ưu tiên?`)) {
+        Swal.fire({ title: 'Đang xử lý...', didOpen: () => Swal.showLoading() });
         try {
-            await apiRequest(`whitelist?ip=${ip}`, 'DELETE');
+            const res = await apiRequest(`whitelist?target=${target}`, 'DELETE');
+            Swal.fire('Thành công', res, 'success');
             loadWhitelist();
         } catch (e) {
             Swal.fire('Lỗi', e.message, 'error');

@@ -121,91 +121,115 @@ func ipToUint32(ipStr string) (uint32, error) {
 	return binary.LittleEndian.Uint32(ipv4), nil
 }
 
-// BlockIP thêm IP vào danh sách đen với timestamp để hỗ trợ TTL/Expiry
-func (m *MapManager) BlockIP(ipStr string) error {
-	ipKey, err := ipToUint32(ipStr)
+// BlockCIDR thêm IP/Subnet vào danh sách đen
+func (m *MapManager) BlockCIDR(cidrStr string) error {
+	ipVal, prefixLen, err := parseCIDR(cidrStr)
 	if err != nil {
 		return err
 	}
 
-	// Value là u64, lưu Unix timestamp (giây) làm thời điểm block để hỗ trợ tự động hết hạn
+	key := LpmTrieKey{
+		PrefixLen: prefixLen,
+		Data:      ipVal,
+	}
 	val := uint64(time.Now().Unix())
-	err = m.prog.objs.IpBlacklist.Put(ipKey, val)
+	err = m.prog.objs.CidrBlacklist.Put(key, val)
 	if err != nil {
-		return fmt.Errorf("lỗi khi ghi IP vào blacklist map: %v", err)
+		return fmt.Errorf("lỗi ghi vào cidr blacklist: %v", err)
 	}
 	return nil
 }
 
-// AllowIP xoá IP khỏi danh sách đen
-func (m *MapManager) AllowIP(ipStr string) error {
-	ipKey, err := ipToUint32(ipStr)
+// AllowCIDR xoá IP/Subnet khỏi danh sách đen
+func (m *MapManager) AllowCIDR(cidrStr string) error {
+	ipVal, prefixLen, err := parseCIDR(cidrStr)
 	if err != nil {
 		return err
 	}
 
-	err = m.prog.objs.IpBlacklist.Delete(ipKey)
+	key := LpmTrieKey{
+		PrefixLen: prefixLen,
+		Data:      ipVal,
+	}
+	err = m.prog.objs.CidrBlacklist.Delete(key)
 	if err != nil {
-		return fmt.Errorf("lỗi khi xoá IP khỏi blacklist map: %v", err)
+		return fmt.Errorf("lỗi xoá khỏi cidr blacklist: %v", err)
 	}
 	return nil
 }
 
-// AllowWhitelistIP thêm IP vào whitelist
-func (m *MapManager) AllowWhitelistIP(ipStr string) error {
-	ipKey, err := ipToUint32(ipStr)
+// AddWhitelistCIDR thêm IP/Subnet vào danh sách trắng
+func (m *MapManager) AddWhitelistCIDR(cidrStr string) error {
+	ipVal, prefixLen, err := parseCIDR(cidrStr)
 	if err != nil {
 		return err
+	}
+
+	key := LpmTrieKey{
+		PrefixLen: prefixLen,
+		Data:      ipVal,
 	}
 	var val uint64 = 1
-	err = m.prog.objs.IpWhitelist.Put(ipKey, val)
+	err = m.prog.objs.CidrWhitelist.Put(key, val)
 	if err != nil {
-		return fmt.Errorf("lỗi khi ghi IP vào whitelist map: %v", err)
+		return fmt.Errorf("lỗi ghi vào cidr whitelist: %v", err)
 	}
 	return nil
 }
 
-// RemoveWhitelistIP xoá IP khỏi whitelist
-func (m *MapManager) RemoveWhitelistIP(ipStr string) error {
-	ipKey, err := ipToUint32(ipStr)
+// RemoveWhitelistCIDR xoá IP/Subnet khỏi danh sách trắng
+func (m *MapManager) RemoveWhitelistCIDR(cidrStr string) error {
+	ipVal, prefixLen, err := parseCIDR(cidrStr)
 	if err != nil {
 		return err
 	}
-	err = m.prog.objs.IpWhitelist.Delete(ipKey)
+
+	key := LpmTrieKey{
+		PrefixLen: prefixLen,
+		Data:      ipVal,
+	}
+	err = m.prog.objs.CidrWhitelist.Delete(key)
 	if err != nil {
-		return fmt.Errorf("lỗi khi xoá IP khỏi whitelist map: %v", err)
+		return fmt.Errorf("lỗi xoá khỏi cidr whitelist: %v", err)
 	}
 	return nil
 }
 
-// GetWhitelistIPs lấy danh sách whitelist
-func (m *MapManager) GetWhitelistIPs() ([]string, error) {
-	var ips []string
-	var key uint32
-	var val uint64
-
-	iter := m.prog.objs.IpWhitelist.Iterate()
-	for iter.Next(&key, &val) {
-		ipBytes := make([]byte, 4)
-		binary.LittleEndian.PutUint32(ipBytes, key)
-		ips = append(ips, net.IP(ipBytes).String())
+// FormatLpmKey format lpm_trie_key_t to string CIDR
+func formatLpmKey(key LpmTrieKey) string {
+	ipBytes := make([]byte, 4)
+	binary.LittleEndian.PutUint32(ipBytes, key.Data)
+	ip := net.IP(ipBytes).String()
+	if key.PrefixLen == 32 {
+		return ip
 	}
-	return ips, iter.Err()
+	return fmt.Sprintf("%s/%d", ip, key.PrefixLen)
 }
 
-// GetBlacklistIPs lấy danh sách tất cả IP đang bị chặn từ BPF map
-func (m *MapManager) GetBlacklistIPs() ([]string, error) {
-	var ips []string
-	var key uint32
+// GetWhitelistCIDRs lấy danh sách whitelist
+func (m *MapManager) GetWhitelistCIDRs() ([]string, error) {
+	var cidrs []string
+	var key LpmTrieKey
 	var val uint64
 
-	iter := m.prog.objs.IpBlacklist.Iterate()
+	iter := m.prog.objs.CidrWhitelist.Iterate()
 	for iter.Next(&key, &val) {
-		ipBytes := make([]byte, 4)
-		binary.LittleEndian.PutUint32(ipBytes, key)
-		ips = append(ips, net.IP(ipBytes).String())
+		cidrs = append(cidrs, formatLpmKey(key))
 	}
-	return ips, iter.Err()
+	return cidrs, iter.Err()
+}
+
+// GetBlacklistCIDRs lấy danh sách blacklist
+func (m *MapManager) GetBlacklistCIDRs() ([]string, error) {
+	var cidrs []string
+	var key LpmTrieKey
+	var val uint64
+
+	iter := m.prog.objs.CidrBlacklist.Iterate()
+	for iter.Next(&key, &val) {
+		cidrs = append(cidrs, formatLpmKey(key))
+	}
+	return cidrs, iter.Err()
 }
 
 type BackendInfo struct {
@@ -364,8 +388,8 @@ func (m *MapManager) ScanAndMitigate(ppsThreshold uint64, bpsThreshold uint64, s
 			binary.LittleEndian.PutUint32(ipBytes, key)
 			ipStr := net.IP(ipBytes).String()
 
-			// Block IP trong 1 giờ
-			if err := m.BlockIP(ipStr); err == nil {
+			// Block CIDR (/32) trong 1 giờ
+			if err := m.BlockCIDR(ipStr); err == nil {
 				blockedIPs = append(blockedIPs, ipStr)
 				// Xoá record trong stats map để tránh xử lý lặp lại
 				m.prog.objs.IpStatsMap.Delete(key)
@@ -403,120 +427,6 @@ func parseCIDR(cidrStr string) (uint32, uint32, error) {
 	return binary.LittleEndian.Uint32(ipv4), uint32(ones), nil
 }
 
-func (m *MapManager) AddASNBlacklist(cidrStr string) error {
-	ipVal, prefixLen, err := parseCIDR(cidrStr)
-	if err != nil {
-		return err
-	}
-	key := LpmTrieKey{
-		PrefixLen: prefixLen,
-		Data:      ipVal,
-	}
-	var val uint64 = 1
-	if err := m.prog.objs.AsnBlacklist.Put(key, val); err != nil {
-		return err
-	}
-	m.UpdateGeoRuleCount()
-	return nil
-}
-
-func (m *MapManager) RemoveASNBlacklist(cidrStr string) error {
-	ipVal, prefixLen, err := parseCIDR(cidrStr)
-	if err != nil {
-		return err
-	}
-	key := LpmTrieKey{
-		PrefixLen: prefixLen,
-		Data:      ipVal,
-	}
-	if err := m.prog.objs.AsnBlacklist.Delete(key); err != nil {
-		return err
-	}
-	m.UpdateGeoRuleCount()
-	return nil
-}
-
-func (m *MapManager) AddCountryBlacklist(cidrStr string) error {
-	ipVal, prefixLen, err := parseCIDR(cidrStr)
-	if err != nil {
-		return err
-	}
-	key := LpmTrieKey{
-		PrefixLen: prefixLen,
-		Data:      ipVal,
-	}
-	var val uint64 = 1
-	if err := m.prog.objs.CountryBlacklist.Put(key, val); err != nil {
-		return err
-	}
-	m.UpdateGeoRuleCount()
-	return nil
-}
-
-func (m *MapManager) RemoveCountryBlacklist(cidrStr string) error {
-	ipVal, prefixLen, err := parseCIDR(cidrStr)
-	if err != nil {
-		return err
-	}
-	key := LpmTrieKey{
-		PrefixLen: prefixLen,
-		Data:      ipVal,
-	}
-	if err := m.prog.objs.CountryBlacklist.Delete(key); err != nil {
-		return err
-	}
-	m.UpdateGeoRuleCount()
-	return nil
-}
-
-func (m *MapManager) UpdateGeoRuleCount() {
-	count := uint64(0)
-	var key LpmTrieKey
-	var val uint64
-	iterAsn := m.prog.objs.AsnBlacklist.Iterate()
-	for iterAsn.Next(&key, &val) {
-		count++
-	}
-	iterCountry := m.prog.objs.CountryBlacklist.Iterate()
-	for iterCountry.Next(&key, &val) {
-		count++
-	}
-	var countKey uint32 = 3
-	m.prog.objs.ConfigMap.Put(countKey, count)
-}
-
-
-
-func (m *MapManager) GetASNBlacklists() ([]string, error) {
-	var list []string
-	var key LpmTrieKey
-	var val uint64
-
-	iter := m.prog.objs.AsnBlacklist.Iterate()
-	for iter.Next(&key, &val) {
-		ipBytes := make([]byte, 4)
-		binary.LittleEndian.PutUint32(ipBytes, key.Data)
-		ipStr := net.IP(ipBytes).String()
-		list = append(list, fmt.Sprintf("%s/%d", ipStr, key.PrefixLen))
-	}
-	return list, iter.Err()
-}
-
-func (m *MapManager) GetCountryBlacklists() ([]string, error) {
-	var list []string
-	var key LpmTrieKey
-	var val uint64
-
-	iter := m.prog.objs.CountryBlacklist.Iterate()
-	for iter.Next(&key, &val) {
-		ipBytes := make([]byte, 4)
-		binary.LittleEndian.PutUint32(ipBytes, key.Data)
-		ipStr := net.IP(ipBytes).String()
-		list = append(list, fmt.Sprintf("%s/%d", ipStr, key.PrefixLen))
-	}
-	return list, iter.Err()
-}
-
 
 type VipStatsVal struct {
 	Passed  uint64
@@ -543,14 +453,14 @@ func (m *MapManager) GetVipStats() (map[string]VipStatsVal, error) {
 	return res, iter.Err()
 }
 
-// CleanExpiredBlacklist quét ip_blacklist_map và xóa các entry đã hết hạn (vượt quá ttlSeconds)
+// CleanExpiredBlacklist quét cidr_blacklist_map và xóa các entry đã hết hạn (vượt quá ttlSeconds)
 func (m *MapManager) CleanExpiredBlacklist(ttlSeconds uint64) ([]string, error) {
-	var key uint32
+	var key LpmTrieKey
 	var val uint64
-	var expiredIPs []string
+	var expiredCIDRs []string
 	nowUnix := uint64(time.Now().Unix())
 
-	iter := m.prog.objs.IpBlacklist.Iterate()
+	iter := m.prog.objs.CidrBlacklist.Iterate()
 	for iter.Next(&key, &val) {
 		// val lưu Unix timestamp (giây) thời điểm block
 		// Nếu val = 0 hoặc val = 1 (entry cũ trước khi có TTL), bỏ qua để tránh xóa nhầm
@@ -558,14 +468,12 @@ func (m *MapManager) CleanExpiredBlacklist(ttlSeconds uint64) ([]string, error) 
 			continue
 		}
 		if nowUnix-val > ttlSeconds {
-			ipBytes := make([]byte, 4)
-			binary.LittleEndian.PutUint32(ipBytes, key)
-			ipStr := net.IP(ipBytes).String()
-			m.prog.objs.IpBlacklist.Delete(key)
-			expiredIPs = append(expiredIPs, ipStr)
+			cidrStr := formatLpmKey(key)
+			m.prog.objs.CidrBlacklist.Delete(key)
+			expiredCIDRs = append(expiredCIDRs, cidrStr)
 		}
 	}
-	return expiredIPs, iter.Err()
+	return expiredCIDRs, iter.Err()
 }
 
 // MapHealthInfo chứa thông tin sức khỏe từng BPF Map
@@ -584,13 +492,12 @@ func (m *MapManager) GetMapHealth() []MapHealthInfo {
 		name string
 		m    interface{ Info() (*ebpf.MapInfo, error) }
 	}{
-		{"ip_blacklist_map", m.prog.objs.IpBlacklist},
+		{"cidr_blacklist_map", m.prog.objs.CidrBlacklist},
+		{"cidr_whitelist_map", m.prog.objs.CidrWhitelist},
 		{"ip_stats_map", m.prog.objs.IpStatsMap},
 		{"backend_map", m.prog.objs.BackendMap},
 		{"stats_map", m.prog.objs.StatsMap},
 		{"a2s_info", m.prog.objs.A2sInfo},
-		{"asn_blacklist_map", m.prog.objs.AsnBlacklist},
-		{"country_blacklist_map", m.prog.objs.CountryBlacklist},
 		{"vip_stats_map", m.prog.objs.VipStats},
 	}
 
@@ -606,10 +513,10 @@ func (m *MapManager) GetMapHealth() []MapHealthInfo {
 		// Đếm số entries hiện tại bằng cách iterate
 		count := 0
 		switch mp.name {
-		case "ip_blacklist_map":
-			var k uint32
+		case "cidr_blacklist_map":
+			var k LpmTrieKey
 			var v uint64
-			iter := m.prog.objs.IpBlacklist.Iterate()
+			iter := m.prog.objs.CidrBlacklist.Iterate()
 			for iter.Next(&k, &v) {
 				count++
 			}
@@ -639,12 +546,12 @@ func (m *MapManager) GetMapHealth() []MapHealthInfo {
 	return health
 }
 
-// GetBlacklistCount đếm số entries trong IP blacklist map
+// GetBlacklistCount đếm số entries trong CIDR blacklist map
 func (m *MapManager) GetBlacklistCount() int {
-	var key uint32
+	var key LpmTrieKey
 	var val uint64
 	count := 0
-	iter := m.prog.objs.IpBlacklist.Iterate()
+	iter := m.prog.objs.CidrBlacklist.Iterate()
 	for iter.Next(&key, &val) {
 		count++
 	}

@@ -38,9 +38,6 @@
                 <a href="#" class="nav-item" data-tab="routing">
                     <i class="fa-solid fa-route"></i> Định tuyến (Routing)
                 </a>
-                <a href="#" class="nav-item" data-tab="geoip">
-                    <i class="fa-solid fa-globe"></i> GeoIP & ASN
-                </a>
                 <a href="#" class="nav-item" data-tab="logs">
                     <i class="fa-solid fa-list-ol"></i> Lịch sử Đánh chặn
                 </a>
@@ -144,16 +141,17 @@
                 <section class="tab-pane" id="tab-blacklist">
                     <div class="panel glass">
                         <div class="panel-header flex-between">
-                            <h3><i class="fa-solid fa-ban"></i> Danh sách IP bị chặn (Blacklist)</h3>
-                            <button class="btn btn-primary" id="btnAddBlacklist"><i class="fa-solid fa-plus"></i> Thêm IP</button>
+                            <h3><i class="fa-solid fa-ban"></i> Danh sách bị chặn (Blacklist)</h3>
+                            <button class="btn btn-primary" id="btnAddBlacklist"><i class="fa-solid fa-plus"></i> Thêm IP/Dải/QG</button>
                         </div>
                         <div class="panel-body">
-                            <div class="table-responsive">
+                            <p style="color: var(--text-secondary); margin-bottom: 16px; font-size: 14px;">Bạn có thể nhập một IP (VD: 1.1.1.1), một dải mạng (VD: 1.1.1.0/24), hoặc Mã Quốc Gia (VD: VN, CN).</p>
+                            <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
                                 <table class="data-table">
                                     <thead>
                                         <tr>
                                             <th>#</th>
-                                            <th>Địa chỉ IP</th>
+                                            <th>Địa chỉ / Dải mạng</th>
                                             <th>Hành động</th>
                                         </tr>
                                     </thead>
@@ -170,17 +168,17 @@
                 <section class="tab-pane" id="tab-whitelist">
                     <div class="panel glass">
                         <div class="panel-header flex-between">
-                            <h3><i class="fa-solid fa-shield-cat text-green"></i> Danh sách IP Ưu tiên (Whitelist)</h3>
-                            <button class="btn btn-primary" id="btnAddWhitelist"><i class="fa-solid fa-plus"></i> Thêm IP</button>
+                            <h3><i class="fa-solid fa-shield-cat text-green"></i> Danh sách Ưu tiên (Whitelist)</h3>
+                            <button class="btn btn-primary" id="btnAddWhitelist"><i class="fa-solid fa-plus"></i> Thêm IP/Dải/QG</button>
                         </div>
                         <div class="panel-body">
-                            <p style="color: var(--text-secondary); margin-bottom: 16px; font-size: 14px;">IP có trong danh sách này sẽ không bao giờ bị XDP chặn, bỏ qua mọi rule lọc Rate Limit và Blacklist.</p>
-                            <div class="table-responsive">
+                            <p style="color: var(--text-secondary); margin-bottom: 16px; font-size: 14px;">Mọi lưu lượng từ danh sách này sẽ không bao giờ bị XDP chặn, bỏ qua mọi rule lọc Rate Limit và Blacklist. Hỗ trợ nhập IP, Subnet (CIDR), và Mã Quốc gia.</p>
+                            <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
                                 <table class="data-table">
                                     <thead>
                                         <tr>
                                             <th>#</th>
-                                            <th>Địa chỉ IP</th>
+                                            <th>Địa chỉ / Dải mạng</th>
                                             <th>Hành động</th>
                                         </tr>
                                     </thead>
@@ -221,59 +219,6 @@
                     </div>
                 </section>
 
-                <!-- TAB: GeoIP -->
-                <section class="tab-pane" id="tab-geoip">
-                    <div class="grid-2">
-                        <div class="panel glass" style="grid-column: 1 / -1; margin-bottom: 15px;">
-                            <div class="panel-header flex-between">
-                                <h3><i class="fa-solid fa-sliders"></i> Chế độ Lọc (GeoIP Policy)</h3>
-                                <div>
-                                    <button class="btn btn-sm btn-danger" id="btnPolicyBlack" onclick="setGeoPolicy('blacklist')"><i class="fa-solid fa-ban"></i> Blacklist (Mặc định)</button>
-                                    <button class="btn btn-sm btn-success" id="btnPolicyWhite" onclick="setGeoPolicy('whitelist')"><i class="fa-solid fa-check"></i> Whitelist (Chặn tất cả trừ...)</button>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="panel glass">
-                            <div class="panel-header flex-between">
-                                <h3 id="titleASN"><i class="fa-solid fa-network-wired"></i> Chặn theo ASN</h3>
-                                <button class="btn btn-sm btn-primary" id="btnAddASN"><i class="fa-solid fa-plus"></i> Thêm</button>
-                            </div>
-                            <div class="panel-body table-responsive">
-                                <table class="data-table">
-                                    <thead>
-                                        <tr>
-                                            <th>Mã ASN</th>
-                                            <th>Xoá</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="asnTable">
-                                        <tr><td colspan="2" class="text-center">Đang tải...</td></tr>
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-
-                        <div class="panel glass">
-                            <div class="panel-header flex-between">
-                                <h3 id="titleCountry"><i class="fa-solid fa-globe"></i> Chặn theo Quốc gia</h3>
-                                <button class="btn btn-sm btn-primary" id="btnAddCountry"><i class="fa-solid fa-plus"></i> Thêm</button>
-                            </div>
-                            <div class="panel-body table-responsive">
-                                <table class="data-table">
-                                    <thead>
-                                        <tr>
-                                            <th>Mã Quốc gia</th>
-                                            <th>Xoá</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="countryTable">
-                                        <tr><td colspan="2" class="text-center">Đang tải...</td></tr>
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                </section>
 
                 <!-- TAB: Logs -->
                 <section class="tab-pane" id="tab-logs">

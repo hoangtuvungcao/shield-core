@@ -181,9 +181,6 @@ func main() {
 		// Khởi tạo persistence và khôi phục state từ lần chạy trước
 		initPersistence()
 		restoreRulesState()
-		// [BUG FIX] Sau khi restore state, BPF config_map (ARRAY) đã reset về 0
-		// Cần tính lại wlist_count để XDP biết danh sách GeoIP có rỗng không
-		mapMgr.UpdateGeoRuleCount()
 
 		// Khởi chạy Auto-Mitigation Engine chạy ngầm
 		go startAutoMitigation()
@@ -244,9 +241,7 @@ func main() {
 	mux.HandleFunc("/api/blacklist", rateLimitMiddleware(authMiddleware(handleBlacklist)))
 	mux.HandleFunc("/api/routing", rateLimitMiddleware(authMiddleware(handleRouting)))
 	mux.HandleFunc("/api/stats", rateLimitMiddleware(authMiddleware(handleStats)))
-	mux.HandleFunc("/api/rules/asn", rateLimitMiddleware(authMiddleware(handleASNBlacklist)))
-	mux.HandleFunc("/api/rules/country", rateLimitMiddleware(authMiddleware(handleCountryBlacklist)))
-	mux.HandleFunc("/api/rules/policy", rateLimitMiddleware(authMiddleware(handleGeoPolicy)))
+
 	mux.HandleFunc("/api/geoip/health", rateLimitMiddleware(authMiddleware(handleGeoIPHealth)))
 	mux.HandleFunc("/api/geoip/reload", rateLimitMiddleware(authMiddleware(handleGeoIPReload)))
 	mux.HandleFunc("/api/whitelist", rateLimitMiddleware(authMiddleware(handleWhitelist)))
@@ -920,49 +915,70 @@ func handleBlacklist(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodGet {
-		ips, err := mapMgr.GetBlacklistIPs()
+		cidrs, err := mapMgr.GetBlacklistCIDRs()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ips)
+		json.NewEncoder(w).Encode(cidrs)
 		return
 	}
 
-	ip := r.URL.Query().Get("ip")
-	if ip == "" {
-		http.Error(w, "Thiếu tham số ip", http.StatusBadRequest)
+	target := r.URL.Query().Get("target") // IP, CIDR, hoặc Mã Quốc Gia (VN, US)
+	if target == "" {
+		http.Error(w, "Thiếu tham số target", http.StatusBadRequest)
 		return
+	}
+
+	var cidrs []string
+	if len(target) == 2 && !strings.Contains(target, ".") {
+		// Xử lý như Country Code
+		if geoIPMgr != nil {
+			resolved, err := geoIPMgr.GetCountryCIDRs(strings.ToUpper(target))
+			if err != nil || len(resolved) == 0 {
+				http.Error(w, "Không tìm thấy CIDR cho Quốc gia này", http.StatusNotFound)
+				return
+			}
+			cidrs = resolved
+		} else {
+			http.Error(w, "GeoIP DB chưa tải", http.StatusServiceUnavailable)
+			return
+		}
+	} else if !strings.Contains(target, "/") {
+		// Thêm /32 cho IP lẻ
+		cidrs = []string{target + "/32"}
+	} else {
+		cidrs = []string{target}
 	}
 
 	if r.Method == http.MethodPost { // Thêm vào Blacklist
-		if err := mapMgr.BlockIP(ip); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		successCount := 0
+		for _, c := range cidrs {
+			if err := mapMgr.BlockCIDR(c); err == nil {
+				successCount++
+			}
 		}
-		w.Write([]byte("Đã chặn IP: " + ip))
+		w.Write([]byte(fmt.Sprintf("Đã chặn %d dải mạng cho target: %s", successCount, target)))
 
-		// Ghi log sự kiện
-		writeMitigationLog("manual_block", ip, "Administrator API request", 0)
+		writeMitigationLog("manual_block", target, "User added to blacklist", 0)
 
-		// Đồng bộ nếu đây là request gốc từ người dùng/hệ thống cục bộ
 		if r.URL.Query().Get("sync") != "true" {
-			syncIPEvent("blacklist", http.MethodPost, ip)
+			syncIPEvent("blacklist", http.MethodPost, target)
 		}
 	} else if r.Method == http.MethodDelete { // Xoá khỏi Blacklist
-		if err := mapMgr.AllowIP(ip); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		successCount := 0
+		for _, c := range cidrs {
+			if err := mapMgr.AllowCIDR(c); err == nil {
+				successCount++
+			}
 		}
-		w.Write([]byte("Đã mở khoá IP: " + ip))
+		w.Write([]byte(fmt.Sprintf("Đã mở khoá %d dải mạng cho target: %s", successCount, target)))
 
-		// Ghi log sự kiện
-		writeMitigationLog("manual_allow", ip, "Administrator API request", 0)
-
+		writeMitigationLog("manual_unblock", target, "User removed from blacklist", 0)
 		// Đồng bộ nếu đây là request gốc từ người dùng/hệ thống
 		if r.URL.Query().Get("sync") != "true" {
-			syncIPEvent("blacklist", http.MethodDelete, ip)
+			syncIPEvent("blacklist", http.MethodDelete, target)
 		}
 	} else {
 		http.Error(w, "Method không hỗ trợ", http.StatusMethodNotAllowed)
@@ -1063,14 +1079,14 @@ func loadReputationDatabase(filePath string) {
 	loadedCount := 0
 	for _, item := range items {
 		if item.Score >= 80 {
-			if err := mapMgr.AddASNBlacklist(item.CIDR); err != nil {
+			if err := mapMgr.BlockCIDR(item.CIDR); err != nil {
 				log.Printf("[Reputation] Lỗi nạp %s (%s): %v", item.CIDR, item.Description, err)
 			} else {
 				loadedCount++
 			}
 		}
 	}
-	log.Printf("[Reputation] Đã nạp thành công %d/%d dải IP uy tín thấp vào ASN Blacklist LPM Trie", loadedCount, len(items))
+	log.Printf("[Reputation] Đã nạp thành công %d/%d dải IP uy tín thấp vào CIDR Blacklist LPM Trie", loadedCount, len(items))
 }
 
 var clusterNodes []string
@@ -1256,232 +1272,7 @@ func syncGeoPolicyEvent(action string) {
 	}
 }
 
-func handleASNBlacklist(w http.ResponseWriter, r *http.Request) {
-	if mapMgr == nil {
-		http.Error(w, "XDP Program chưa được nạp", http.StatusServiceUnavailable)
-		return
-	}
 
-	if r.Method == http.MethodGet {
-		list := mapMgr.GetActiveASNs()
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(list)
-		return
-	}
-
-	cidr := r.URL.Query().Get("cidr")
-	asnStr := r.URL.Query().Get("asn")
-
-	if cidr == "" && asnStr == "" {
-		http.Error(w, "Thiếu tham số cidr hoặc asn", http.StatusBadRequest)
-		return
-	}
-
-	var cidrs []string
-	if asnStr != "" {
-		asnStr = strings.TrimPrefix(strings.ToUpper(asnStr), "AS")
-		asnVal, err := strconv.ParseUint(asnStr, 10, 32)
-		if err != nil {
-			http.Error(w, "ASN không hợp lệ: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		resolved, err := geoIPMgr.GetASNCIDRs(uint32(asnVal))
-		if err != nil {
-			http.Error(w, "Lỗi khi tra cứu ASN: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if len(resolved) == 0 {
-			http.Error(w, "Không tìm thấy CIDR nào cho ASN này", http.StatusNotFound)
-			return
-		}
-		cidrs = resolved
-	} else {
-		cidrs = []string{cidr}
-	}
-
-	if r.Method == http.MethodPost {
-		successCount := 0
-		var lastErr error
-		for _, c := range cidrs {
-			if err := mapMgr.AddASNBlacklist(c); err != nil {
-				lastErr = err
-			} else {
-				successCount++
-			}
-		}
-		if lastErr != nil && successCount == 0 {
-			http.Error(w, lastErr.Error(), http.StatusInternalServerError)
-			return
-		}
-		if asnStr != "" {
-			mapMgr.AddActiveASN(asnStr)
-			if r.URL.Query().Get("sync") != "true" {
-				syncGeoRuleEvent(http.MethodPost, "asn", asnStr)
-			}
-			go saveRulesState()
-		}
-		w.Write([]byte(fmt.Sprintf("Đã chặn %d dải IP thuộc ASN: %s", successCount, asnStr)))
-	} else if r.Method == http.MethodDelete {
-		successCount := 0
-		var lastErr error
-		for _, c := range cidrs {
-			if err := mapMgr.RemoveASNBlacklist(c); err != nil {
-				lastErr = err
-			} else {
-				successCount++
-			}
-		}
-		if lastErr != nil && successCount == 0 {
-			http.Error(w, lastErr.Error(), http.StatusInternalServerError)
-			return
-		}
-		if asnStr != "" {
-			mapMgr.RemoveActiveASN(asnStr)
-			if r.URL.Query().Get("sync") != "true" {
-				syncGeoRuleEvent(http.MethodDelete, "asn", asnStr)
-			}
-			go saveRulesState()
-		}
-		w.Write([]byte(fmt.Sprintf("Đã mở khoá %d dải IP thuộc ASN: %s", successCount, asnStr)))
-	} else {
-		http.Error(w, "Method không hỗ trợ", http.StatusMethodNotAllowed)
-	}
-}
-
-func handleCountryBlacklist(w http.ResponseWriter, r *http.Request) {
-	if mapMgr == nil {
-		http.Error(w, "XDP Program chưa được nạp", http.StatusServiceUnavailable)
-		return
-	}
-
-	if r.Method == http.MethodGet {
-		list := mapMgr.GetActiveCountries()
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(list)
-		return
-	}
-
-	cidr := r.URL.Query().Get("cidr")
-	countryCode := r.URL.Query().Get("country")
-
-	if cidr == "" && countryCode == "" {
-		http.Error(w, "Thiếu tham số cidr hoặc country", http.StatusBadRequest)
-		return
-	}
-
-	var cidrs []string
-	if countryCode != "" {
-		countryCode = strings.ToUpper(countryCode)
-		resolved, err := geoIPMgr.GetCountryCIDRs(countryCode)
-		if err != nil {
-			http.Error(w, "Lỗi khi tra cứu Country: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if len(resolved) == 0 {
-			http.Error(w, "Không tìm thấy CIDR nào cho quốc gia này", http.StatusNotFound)
-			return
-		}
-		cidrs = resolved
-	} else {
-		cidrs = []string{cidr}
-	}
-
-	if r.Method == http.MethodPost {
-		successCount := 0
-		var lastErr error
-		for _, c := range cidrs {
-			if err := mapMgr.AddCountryBlacklist(c); err != nil {
-				lastErr = err
-			} else {
-				successCount++
-			}
-		}
-		if lastErr != nil && successCount == 0 {
-			http.Error(w, lastErr.Error(), http.StatusInternalServerError)
-			return
-		}
-		if countryCode != "" {
-			mapMgr.AddActiveCountry(countryCode)
-			if r.URL.Query().Get("sync") != "true" {
-				syncGeoRuleEvent(http.MethodPost, "country", countryCode)
-			}
-			go saveRulesState()
-		}
-		w.Write([]byte(fmt.Sprintf("Đã chặn %d dải IP thuộc quốc gia: %s", successCount, countryCode)))
-	} else if r.Method == http.MethodDelete {
-		successCount := 0
-		var lastErr error
-		for _, c := range cidrs {
-			if err := mapMgr.RemoveCountryBlacklist(c); err != nil {
-				lastErr = err
-			} else {
-				successCount++
-			}
-		}
-		if lastErr != nil && successCount == 0 {
-			http.Error(w, lastErr.Error(), http.StatusInternalServerError)
-			return
-		}
-		if countryCode != "" {
-			mapMgr.RemoveActiveCountry(countryCode)
-			if r.URL.Query().Get("sync") != "true" {
-				syncGeoRuleEvent(http.MethodDelete, "country", countryCode)
-			}
-			go saveRulesState()
-		}
-		w.Write([]byte(fmt.Sprintf("Đã mở khoá %d dải IP thuộc quốc gia: %s", successCount, countryCode)))
-	} else {
-		http.Error(w, "Method không hỗ trợ", http.StatusMethodNotAllowed)
-	}
-}
-
-func handleGeoPolicy(w http.ResponseWriter, r *http.Request) {
-	if mapMgr == nil {
-		http.Error(w, "XDP Program chưa được nạp", http.StatusServiceUnavailable)
-		return
-	}
-	if r.Method == http.MethodGet {
-		policy, err := mapMgr.GetGeoIPPolicy()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		action := "blacklist"
-		if policy == 1 {
-			action = "whitelist"
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{"policy": action})
-		return
-	}
-
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method không hỗ trợ", http.StatusMethodNotAllowed)
-		return
-	}
-	action := r.URL.Query().Get("action")
-	policy := uint64(0)
-	if action == "whitelist" {
-		policy = 1
-	} else if action == "blacklist" {
-		policy = 0
-	} else {
-		http.Error(w, "Tham số action phải là whitelist hoặc blacklist", http.StatusBadRequest)
-		return
-	}
-
-	if err := mapMgr.SetGeoIPPolicy(policy); err != nil {
-		http.Error(w, "Lỗi khi cập nhật policy: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	if r.URL.Query().Get("sync") != "true" {
-		syncGeoPolicyEvent(action)
-	}
-
-	go saveRulesState()
-	w.Write([]byte(fmt.Sprintf("Đã cập nhật chế độ GeoIP thành: %s", action)))
-}
 
 func handleGeoIPHealth(w http.ResponseWriter, r *http.Request) {
 	if geoIPMgr == nil {
@@ -1570,46 +1361,69 @@ func handleWhitelist(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == "GET" {
-		ips, err := mapMgr.GetWhitelistIPs()
+		cidrs, err := mapMgr.GetWhitelistCIDRs()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(ips)
+		json.NewEncoder(w).Encode(cidrs)
 		return
 	}
 
-	ip := r.URL.Query().Get("ip")
-	if ip == "" {
-		http.Error(w, "Thiếu tham số ip", http.StatusBadRequest)
+	target := r.URL.Query().Get("target") // IP, CIDR, hoặc Mã Quốc Gia (VN, US)
+	if target == "" {
+		http.Error(w, "Thiếu tham số target", http.StatusBadRequest)
 		return
+	}
+
+	var cidrs []string
+	if len(target) == 2 && !strings.Contains(target, ".") {
+		// Xử lý như Country Code
+		if geoIPMgr != nil {
+			resolved, err := geoIPMgr.GetCountryCIDRs(strings.ToUpper(target))
+			if err != nil || len(resolved) == 0 {
+				http.Error(w, "Không tìm thấy CIDR cho Quốc gia này", http.StatusNotFound)
+				return
+			}
+			cidrs = resolved
+		} else {
+			http.Error(w, "GeoIP DB chưa tải", http.StatusServiceUnavailable)
+			return
+		}
+	} else if !strings.Contains(target, "/") {
+		// Thêm /32 cho IP lẻ
+		cidrs = []string{target + "/32"}
+	} else {
+		cidrs = []string{target}
 	}
 
 	switch r.Method {
 	case "POST":
-		err := mapMgr.AllowWhitelistIP(ip)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		successCount := 0
+		for _, c := range cidrs {
+			if err := mapMgr.AddWhitelistCIDR(c); err == nil {
+				successCount++
+			}
 		}
-		fmt.Fprintf(w, "Đã thêm IP %s vào Whitelist\n", ip)
-		writeMitigationLog("WHITELIST_ADD", ip, "User added to whitelist", 0)
+		fmt.Fprintf(w, "Đã thêm %d dải mạng cho target %s vào Whitelist\n", successCount, target)
+		writeMitigationLog("WHITELIST_ADD", target, "User added to whitelist", 0)
 
 		if r.URL.Query().Get("sync") != "true" {
-			syncIPEvent("whitelist", http.MethodPost, ip)
+			syncIPEvent("whitelist", http.MethodPost, target)
 		}
 	case "DELETE":
-		err := mapMgr.RemoveWhitelistIP(ip)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		successCount := 0
+		for _, c := range cidrs {
+			if err := mapMgr.RemoveWhitelistCIDR(c); err == nil {
+				successCount++
+			}
 		}
-		fmt.Fprintf(w, "Đã xoá IP %s khỏi Whitelist\n", ip)
-		writeMitigationLog("WHITELIST_REMOVE", ip, "User removed from whitelist", 0)
+		fmt.Fprintf(w, "Đã xoá %d dải mạng cho target %s khỏi Whitelist\n", successCount, target)
+		writeMitigationLog("WHITELIST_REMOVE", target, "User removed from whitelist", 0)
 
 		if r.URL.Query().Get("sync") != "true" {
-			syncIPEvent("whitelist", http.MethodDelete, ip)
+			syncIPEvent("whitelist", http.MethodDelete, target)
 		}
 	default:
 		http.Error(w, "Method không được hỗ trợ", http.StatusMethodNotAllowed)

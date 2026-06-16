@@ -19,15 +19,13 @@ type XDPProgram struct {
 // Struct ánh xạ với các object trong file ELF compile ra từ C
 type bpfObjects struct {
 	XdpProgMain      *ebpf.Program `ebpf:"xdp_prog_main"`
-	IpBlacklist      *ebpf.Map     `ebpf:"ip_blacklist_map"`
-	IpWhitelist      *ebpf.Map     `ebpf:"ip_whitelist_map"`
+	CidrBlacklist    *ebpf.Map     `ebpf:"cidr_blacklist_map"`
+	CidrWhitelist    *ebpf.Map     `ebpf:"cidr_whitelist_map"`
 	IpStatsMap       *ebpf.Map     `ebpf:"ip_stats_map"`
 	BackendMap       *ebpf.Map     `ebpf:"backend_map"`
 	StatsMap         *ebpf.Map     `ebpf:"stats_map"`
 	XsksMap          *ebpf.Map     `ebpf:"xsks_map"`
 	A2sInfo          *ebpf.Map     `ebpf:"a2s_info"`
-	AsnBlacklist     *ebpf.Map     `ebpf:"asn_blacklist_map"`
-	CountryBlacklist *ebpf.Map     `ebpf:"country_blacklist_map"`
 	VipStats         *ebpf.Map     `ebpf:"vip_stats_map"`
 	LocalPorts       *ebpf.Map     `ebpf:"local_ports_map"`
 	ConfigMap        *ebpf.Map     `ebpf:"config_map"`
@@ -79,7 +77,8 @@ func LoadXDPProgram(ifaceName string, objPath string) (*XDPProgram, error) {
 	// Ghim các BPF Maps dùng chung với AF_XDP
 	objs.XsksMap.Pin("/sys/fs/bpf/shield_core/xsks_map")
 	objs.A2sInfo.Pin("/sys/fs/bpf/shield_core/a2s_info")
-	objs.IpBlacklist.Pin("/sys/fs/bpf/shield_core/ip_blacklist_map")
+	objs.CidrBlacklist.Pin("/sys/fs/bpf/shield_core/cidr_blacklist_map")
+	objs.CidrWhitelist.Pin("/sys/fs/bpf/shield_core/cidr_whitelist_map")
 	objs.RingStatsMap.Pin("/sys/fs/bpf/shield_core/ring_stats_map")
 
 	// Xóa XDP cũ (nếu có) để tránh lỗi file exists
