@@ -334,7 +334,7 @@ func (m *MapManager) GetStats() (uint64, uint64, error) {
 }
 
 // ScanAndMitigate quét map thống kê IP và tự động chặn các IP spam vượt ngưỡng (gộp từ Per-CPU stats)
-func (m *MapManager) ScanAndMitigate(ppsThreshold uint64, bpsThreshold uint64) ([]string, error) {
+func (m *MapManager) ScanAndMitigate(ppsThreshold uint64, bpsThreshold uint64, scanLimit int) ([]string, error) {
 	var key uint32
 	type statVal struct {
 		PPS        uint64
@@ -346,7 +346,12 @@ func (m *MapManager) ScanAndMitigate(ppsThreshold uint64, bpsThreshold uint64) (
 	var blockedIPs []string
 
 	iter := m.prog.objs.IpStatsMap.Iterate()
+	count := 0
 	for iter.Next(&key, &vals) {
+		count++
+		if scanLimit > 0 && count > scanLimit {
+			break
+		}
 		var totalPPS uint64
 		var totalBPS uint64
 		for _, v := range vals {

@@ -471,6 +471,16 @@ func getCPUStats() (cpuStats, error) {
 	return cpuStats{}, fmt.Errorf("không tìm thấy dòng cpu")
 }
 
+func getQueueDrops(iface string) (uint64, error) {
+	data, err := os.ReadFile(fmt.Sprintf("/sys/class/net/%s/statistics/rx_dropped", iface))
+	if err != nil {
+		return 0, err
+	}
+	var drops uint64
+	fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &drops)
+	return drops, nil
+}
+
 func calculateCPUUsage(prev, curr cpuStats) float64 {
 	prevIdle := prev.idle + prev.iowait
 	currIdle := curr.idle + curr.iowait
@@ -490,20 +500,30 @@ func calculateCPUUsage(prev, curr cpuStats) float64 {
 	return float64(totalDiff-idleDiff) / float64(totalDiff) * 100.0
 }
 
-// startAutoMitigation chạy vòng lặp quét IP spam và tự động cách ly (FSM 5 Level)
+// startAutoMitigation chạy vòng lặp quét IP spam và tự động cách ly (FSM 6 Level)
 func startAutoMitigation() {
-	log.Println("Đang khởi động Auto-Mitigation Engine v2...")
+	log.Println("Đang khởi động Auto-Mitigation Engine v2.1...")
 	
 	var prevCPU cpuStats
 	if stats, err := getCPUStats(); err == nil {
 		prevCPU = stats
 	}
 
+	iface := os.Getenv("SHIELD_IFACE")
+	if iface == "" {
+		iface = "eth0"
+	}
+	
+	var prevDrops uint64
+	if d, err := getQueueDrops(iface); err == nil {
+		prevDrops = d
+	}
+
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	currentLevel := 0
-	levelHoldTime := 0 // Dùng để làm Hysteresis (tránh flapping)
+	levelHoldTime := 0 // Dùng để làm Asymmetric Hysteresis
 
 	for range ticker.C {
 		if mapMgr == nil {
@@ -512,6 +532,7 @@ func startAutoMitigation() {
 
 		cpuPercent := 0.0
 		ramPercent := 0.0
+		queueDropsDelta := uint64(0)
 
 		if currCPU, err := getCPUStats(); err == nil {
 			cpuPercent = calculateCPUUsage(prevCPU, currCPU)
@@ -522,30 +543,81 @@ func startAutoMitigation() {
 			ramPercent = currRam
 		}
 
-		// Xác định Target Level dựa trên tài nguyên
-		targetLevel := 0
-		if cpuPercent > 95.0 || ramPercent > 95.0 {
-			targetLevel = 4
-		} else if cpuPercent > 90.0 || ramPercent > 92.0 {
-			targetLevel = 3
-		} else if cpuPercent > 80.0 || ramPercent > 85.0 {
-			targetLevel = 2
-		} else if cpuPercent > 60.0 || ramPercent > 70.0 {
-			targetLevel = 1
+		if currDrops, err := getQueueDrops(iface); err == nil {
+			if currDrops >= prevDrops {
+				queueDropsDelta = currDrops - prevDrops
+			}
+			prevDrops = currDrops
 		}
 
-		// Cơ chế Hysteresis: Lên level ngay lập tức, nhưng xuống level thì phải từ từ
+		// Map Health Awareness
+		healths := mapMgr.GetMapHealth()
+		maxMapUsage := 0.0
+		for _, h := range healths {
+			if h.Name == "ip_stats_map" || h.Name == "ip_blacklist_map" {
+				if h.UsagePct > maxMapUsage {
+					maxMapUsage = h.UsagePct
+				}
+			}
+		}
+
+		// Xác định Target Level dựa trên CPU, RAM, và Queue Drops
+		targetLevel := 0
+		if cpuPercent > 95.0 || ramPercent > 95.0 || queueDropsDelta > 10000 {
+			targetLevel = 4
+		} else if cpuPercent > 90.0 || ramPercent > 92.0 || queueDropsDelta > 5000 {
+			targetLevel = 3
+		} else if cpuPercent > 80.0 || ramPercent > 85.0 || queueDropsDelta > 1000 {
+			targetLevel = 2
+		} else if cpuPercent > 60.0 || ramPercent > 70.0 || queueDropsDelta > 100 {
+			targetLevel = 1
+		}
+		
+		// Map Pressure modifiers
+		if targetLevel < 4 {
+			if maxMapUsage > 95.0 {
+				targetLevel += 2
+			} else if maxMapUsage > 85.0 {
+				targetLevel += 1
+			}
+			if targetLevel > 4 {
+				targetLevel = 4
+			}
+		}
+
+		// Cơ chế Asymmetric Hysteresis (Lên nhanh 5s, Xuống chậm 30s)
 		if targetLevel > currentLevel {
-			currentLevel = targetLevel
-			levelHoldTime = 10 // Giữ tối thiểu 10 giây trước khi hạ
-			log.Printf("[FSM] Tăng cấp độ phòng thủ lên Level %d (CPU: %.2f%%, RAM: %.2f%%)", currentLevel, cpuPercent, ramPercent)
+			if currentLevel == 5 {
+			    // Bị tấn công lại trong lúc đang Recovery -> Lên lại ngay
+			    currentLevel = targetLevel
+			    levelHoldTime = 5
+			    log.Printf("[FSM] Bị tấn công lại! Rời Recovery, tăng Level %d (CPU: %.1f%%, RAM: %.1f%%, Drops: %d)", currentLevel, cpuPercent, ramPercent, queueDropsDelta)
+			} else {
+			    if levelHoldTime > 0 {
+			        levelHoldTime--
+			    } else {
+			        currentLevel = targetLevel
+			        levelHoldTime = 5 // Promote: Giữ tối thiểu 5s
+			        log.Printf("[FSM] Tăng cấp độ phòng thủ lên Level %d (CPU: %.1f%%, RAM: %.1f%%, Drops: %d, MapMax: %.1f%%)", currentLevel, cpuPercent, ramPercent, queueDropsDelta, maxMapUsage)
+			    }
+			}
 		} else if targetLevel < currentLevel {
 			if levelHoldTime > 0 {
 				levelHoldTime--
 			} else {
-				currentLevel = targetLevel
-				levelHoldTime = 5 // Giữ 5 giây cho mỗi lần hạ cấp
-				log.Printf("[FSM] Hạ nhiệt độ phòng thủ xuống Level %d (CPU: %.2f%%, RAM: %.2f%%)", currentLevel, cpuPercent, ramPercent)
+				if currentLevel > 0 && currentLevel <= 4 && targetLevel == 0 {
+				    currentLevel = 5 // Chuyển sang Recovery
+				    levelHoldTime = 30 // Giữ Recovery 30 giây
+				    log.Printf("[FSM] Mức nguy hiểm đã qua, vào trạng thái Recovery (Level 5) - Chờ 30s")
+				} else if currentLevel == 5 {
+				    currentLevel = 0
+				    levelHoldTime = 0
+				    log.Printf("[FSM] Trở về trạng thái Normal (Level 0)")
+				} else {
+				    currentLevel = targetLevel
+				    levelHoldTime = 30 // Demote: Giữ 30 giây cho mỗi lần hạ cấp
+				    log.Printf("[FSM] Hạ nhiệt độ phòng thủ xuống Level %d", currentLevel)
+				}
 			}
 		}
 
@@ -563,13 +635,17 @@ func startAutoMitigation() {
 			currentBPSThreshold = 2 * 1024 * 1024
 			ttl = 14400 // 4 hours
 		case 3:
-			currentPPSThreshold = 300
-			currentBPSThreshold = 500 * 1024
+			currentPPSThreshold = 500
+			currentBPSThreshold = 1 * 1024 * 1024 // 1 MB/s
 			ttl = 86400 // 24 hours
 		case 4:
-			currentPPSThreshold = 100
-			currentBPSThreshold = 100 * 1024
+			currentPPSThreshold = 300
+			currentBPSThreshold = 500 * 1024 // 500 KB/s
 			ttl = 86400 // 24 hours
+		case 5:
+			currentPPSThreshold = 3000
+			currentBPSThreshold = 5 * 1024 * 1024
+			ttl = 3600
 		}
 
 		// Cập nhật ngưỡng động vào eBPF config_map
@@ -577,8 +653,8 @@ func startAutoMitigation() {
 			log.Printf("[Auto-Mitigation] Lỗi cập nhật config_map: %v", err)
 		}
 
-		// Quét dọn / Mitigate
-		blockedIPs, err := mapMgr.ScanAndMitigate(currentPPSThreshold, currentBPSThreshold)
+		// Quét dọn / Mitigate (Scan 10000 entries/cycle)
+		blockedIPs, err := mapMgr.ScanAndMitigate(currentPPSThreshold, currentBPSThreshold, 10000)
 		if err != nil {
 			log.Printf("[Auto-Mitigation] Lỗi quét map: %v", err)
 			continue
