@@ -165,54 +165,30 @@ int xdp_prog_main(struct xdp_md *ctx)
 
     // 4. Các Pipeline sẽ được gắn vào đây:
 
-    // [PIPELINE PORT-BYPASS] Kiểm tra local_ports_map trước Rate Limiter
-    // Các port đang lắng nghe trên máy chủ (ssh, game, web) được miễn Rate Limit
-    // NHƯNG vẫn phải qua GeoIP và Blacklist ở trên để bảo vệ bình thường
-    u8 bypass_ratelimit = 0;
-    if (dport != 0) {
-        u32 port_key = (u32)dport;
-        // Cứng: Port 22 (SSH) và 9090 (API) luôn bypass rate limit
-        if (dport == 22 || dport == 9090) {
-            bypass_ratelimit = 1;
-        } else {
-            u8 *local_flag = bpf_map_lookup_elem(&local_ports_map, &port_key);
-            if (local_flag && *local_flag == 1) {
-                bypass_ratelimit = 1;
-            }
-        }
-    }
+    // [Pipeline 1] L3/L4 Firewall (Rate Limit theo Source IP)
+    // Không có bất kỳ bypass nào theo port - mọi source IP đều bị kiểm tra
 
-    // [Pipeline 1] L3/L4 Firewall (Blacklist, Rate Limit)
-
-    // [Pipeline 1.5] L4 Rate Limiting
-    // Áp dụng cho UDP, ICMP và TCP non-SYN (ACK Flood / RST Flood protection)
-    if (!bypass_ratelimit && (protocol == IPPROTO_UDP || protocol == IPPROTO_ICMP)) {
+    // [Pipeline 1.5] UDP + ICMP Rate Limiting
+    if (protocol == IPPROTO_UDP || protocol == IPPROTO_ICMP) {
         u16 pkt_len = data_end - data;
         u64 now = bpf_ktime_get_ns();
-        
         if (check_rate_limit(src_ip, pkt_len, now) == 1) {
             u32 drop_key = 1;
             u64 *drop_stats = bpf_map_lookup_elem(&stats_map, &drop_key);
-            if (drop_stats) {
-                (*drop_stats)++;
-            }
+            if (drop_stats) (*drop_stats)++;
             update_vip_stats(iph->daddr, 1);
             return XDP_DROP;
         }
     }
 
-    // [Pipeline 1.6] TCP Flood Protection (Fallback Kernel 5.4)
-    // Trên Ubuntu 20.04 (Kernel 5.4), bpf_tcp_gen_syncookie chưa được hỗ trợ.
-    // Thay vì SYN Cookie, ta áp dụng Rate Limit cho TOÀN BỘ gói TCP (cả SYN và ACK).
-    if (!bypass_ratelimit && protocol == IPPROTO_TCP && tcph != NULL) {
+    // [Pipeline 1.6] TCP Rate Limiting (áp dụng cho toàn bộ TCP kể cả SYN/ACK)
+    if (protocol == IPPROTO_TCP && tcph != NULL) {
         u16 pkt_len = data_end - data;
         u64 now = bpf_ktime_get_ns();
         if (check_rate_limit(src_ip, pkt_len, now) == 1) {
             u32 drop_key = 1;
             u64 *drop_stats = bpf_map_lookup_elem(&stats_map, &drop_key);
-            if (drop_stats) {
-                (*drop_stats)++;
-            }
+            if (drop_stats) (*drop_stats)++;
             update_vip_stats(iph->daddr, 1);
             return XDP_DROP;
         }
