@@ -245,6 +245,7 @@ func main() {
 	mux.HandleFunc("/api/geoip/health", rateLimitMiddleware(authMiddleware(handleGeoIPHealth)))
 	mux.HandleFunc("/api/geoip/reload", rateLimitMiddleware(authMiddleware(handleGeoIPReload)))
 	mux.HandleFunc("/api/whitelist", rateLimitMiddleware(authMiddleware(handleWhitelist)))
+	mux.HandleFunc("/api/rules/policy", rateLimitMiddleware(authMiddleware(handleRulesPolicy)))
 	mux.HandleFunc("/api/logs", rateLimitMiddleware(authMiddleware(handleLogs)))
 	// Prometheus metrics endpoint (public - chuẩn cho scraping)
 	mux.HandleFunc("/metrics", handlePrometheusMetrics)
@@ -1435,6 +1436,61 @@ func handleWhitelist(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "Method không được hỗ trợ", http.StatusMethodNotAllowed)
 	}
+}
+
+// handleRulesPolicy API
+func handleRulesPolicy(w http.ResponseWriter, r *http.Request) {
+	if mapMgr == nil {
+		http.Error(w, "Map Manager chưa sẵn sàng", http.StatusServiceUnavailable)
+		return
+	}
+
+	if r.Method == "GET" {
+		policy, err := mapMgr.GetGeoIPPolicy()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]uint64{"policy": policy})
+		return
+	}
+
+	if r.Method == "POST" {
+		action := r.URL.Query().Get("action")
+		var policy uint64
+		if action == "1" || action == "drop" {
+			policy = 1
+		} else if action == "0" || action == "pass" {
+			policy = 0
+		} else {
+			http.Error(w, "Action không hợp lệ (hỗ trợ: 0, 1, pass, drop)", http.StatusBadRequest)
+			return
+		}
+
+		err := mapMgr.SetGeoIPPolicy(policy)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		
+		saveRulesState()
+
+		policyStr := "Default Pass (Chỉ chặn Blacklist)"
+		if policy == 1 {
+			policyStr = "Default Drop (Chỉ cho phép Whitelist)"
+		}
+
+		fmt.Fprintf(w, "Đã cập nhật GeoIP Policy thành: %s\n", policyStr)
+		writeMitigationLog("POLICY_UPDATE", fmt.Sprintf("%d", policy), "User updated GeoIP Policy", 0)
+
+		if r.URL.Query().Get("sync") != "true" {
+			syncGeoPolicyEvent(fmt.Sprintf("%d", policy))
+		}
+		return
+	}
+
+	http.Error(w, "Method không được hỗ trợ", http.StatusMethodNotAllowed)
 }
 
 // handleLogs API

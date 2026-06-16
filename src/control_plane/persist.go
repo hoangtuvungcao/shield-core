@@ -10,6 +10,7 @@ import (
 
 // RulesState lưu toàn bộ trạng thái rule để persist ra disk
 type RulesState struct {
+	GeoIPPolicy      uint64   `json:"geoip_policy"`
 	BlacklistTargets []string `json:"blacklist_targets"`
 	WhitelistTargets []string `json:"whitelist_targets"`
 }
@@ -32,7 +33,10 @@ func saveRulesState() {
 	stateMutex.Lock()
 	defer stateMutex.Unlock()
 
+	policy, _ := mapMgr.GetGeoIPPolicy()
+
 	state := RulesState{
+		GeoIPPolicy:      policy,
 		BlacklistTargets: mapMgr.GetBlacklistTargets(),
 		WhitelistTargets: mapMgr.GetWhitelistTargets(),
 	}
@@ -101,6 +105,10 @@ func restoreRulesState() {
 
 	log.Println("[Persist] Đang khôi phục trạng thái từ file...")
 	restored := 0
+
+	// Restore Policy
+	mapMgr.SetGeoIPPolicy(state.GeoIPPolicy)
+	log.Printf("[Persist] ✓ Khôi phục GeoIP Policy: %d", state.GeoIPPolicy)
 
 	// Restore Blacklist
 	for _, target := range state.BlacklistTargets {
