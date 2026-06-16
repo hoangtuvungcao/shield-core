@@ -243,6 +243,7 @@ func main() {
 	mux.HandleFunc("/api/stats", rateLimitMiddleware(authMiddleware(handleStats)))
 	mux.HandleFunc("/api/rules/asn", rateLimitMiddleware(authMiddleware(handleASNBlacklist)))
 	mux.HandleFunc("/api/rules/country", rateLimitMiddleware(authMiddleware(handleCountryBlacklist)))
+	mux.HandleFunc("/api/rules/policy", rateLimitMiddleware(authMiddleware(handleGeoPolicy)))
 	mux.HandleFunc("/api/geoip/health", rateLimitMiddleware(authMiddleware(handleGeoIPHealth)))
 	mux.HandleFunc("/api/geoip/reload", rateLimitMiddleware(authMiddleware(handleGeoIPReload)))
 	mux.HandleFunc("/api/whitelist", rateLimitMiddleware(authMiddleware(handleWhitelist)))
@@ -905,6 +906,67 @@ func syncBlacklistEvent(method string, ip string) {
 	}
 }
 
+func syncGeoRuleEvent(method string, ruleType string, value string) {
+	if len(clusterNodes) == 0 {
+		return
+	}
+	for _, node := range clusterNodes {
+		if isLocalAddress(node) {
+			continue
+		}
+		go func(n string) {
+			targetUrl := fmt.Sprintf("%s/api/rules/%s?%s=%s&sync=true", n, ruleType, ruleType, value)
+			req, err := http.NewRequest(method, targetUrl, nil)
+			if err != nil {
+				return
+			}
+			req.Header.Set("X-API-Key", configuredAPIKey)
+			client := &http.Client{
+				Timeout: 5 * time.Second,
+				Transport: &http.Transport{
+					TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+				},
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				log.Printf("[Sync Geo -> %s] Lỗi: %v", n, err)
+				return
+			}
+			defer resp.Body.Close()
+			log.Printf("[Sync Geo -> %s] Đã đồng bộ sự kiện %s cho %s=%s (Status: %d)", n, method, ruleType, value, resp.StatusCode)
+		}(node)
+	}
+}
+
+func syncGeoPolicyEvent(action string) {
+	if len(clusterNodes) == 0 {
+		return
+	}
+	for _, node := range clusterNodes {
+		if isLocalAddress(node) {
+			continue
+		}
+		go func(n string) {
+			targetUrl := fmt.Sprintf("%s/api/rules/policy?action=%s&sync=true", n, action)
+			req, err := http.NewRequest(http.MethodPost, targetUrl, nil)
+			if err != nil {
+				return
+			}
+			req.Header.Set("X-API-Key", configuredAPIKey)
+			client := &http.Client{
+				Timeout: 5 * time.Second,
+				Transport: &http.Transport{
+					TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+				},
+			}
+			resp, err := client.Do(req)
+			if err == nil {
+				resp.Body.Close()
+			}
+		}(node)
+	}
+}
+
 func handleASNBlacklist(w http.ResponseWriter, r *http.Request) {
 	if mapMgr == nil {
 		http.Error(w, "XDP Program chưa được nạp", http.StatusServiceUnavailable)
@@ -912,11 +974,7 @@ func handleASNBlacklist(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodGet {
-		list, err := mapMgr.GetASNBlacklists()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		list := mapMgr.GetActiveASNs()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(list)
 		return
@@ -966,6 +1024,12 @@ func handleASNBlacklist(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, lastErr.Error(), http.StatusInternalServerError)
 			return
 		}
+		if asnStr != "" {
+			mapMgr.AddActiveASN(asnStr)
+			if r.URL.Query().Get("sync") != "true" {
+				syncGeoRuleEvent(http.MethodPost, "asn", asnStr)
+			}
+		}
 		w.Write([]byte(fmt.Sprintf("Đã chặn %d dải IP thuộc ASN: %s", successCount, asnStr)))
 	} else if r.Method == http.MethodDelete {
 		successCount := 0
@@ -981,6 +1045,12 @@ func handleASNBlacklist(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, lastErr.Error(), http.StatusInternalServerError)
 			return
 		}
+		if asnStr != "" {
+			mapMgr.RemoveActiveASN(asnStr)
+			if r.URL.Query().Get("sync") != "true" {
+				syncGeoRuleEvent(http.MethodDelete, "asn", asnStr)
+			}
+		}
 		w.Write([]byte(fmt.Sprintf("Đã mở khoá %d dải IP thuộc ASN: %s", successCount, asnStr)))
 	} else {
 		http.Error(w, "Method không hỗ trợ", http.StatusMethodNotAllowed)
@@ -994,11 +1064,7 @@ func handleCountryBlacklist(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodGet {
-		list, err := mapMgr.GetCountryBlacklists()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		list := mapMgr.GetActiveCountries()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(list)
 		return
@@ -1043,6 +1109,12 @@ func handleCountryBlacklist(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, lastErr.Error(), http.StatusInternalServerError)
 			return
 		}
+		if countryCode != "" {
+			mapMgr.AddActiveCountry(countryCode)
+			if r.URL.Query().Get("sync") != "true" {
+				syncGeoRuleEvent(http.MethodPost, "country", countryCode)
+			}
+		}
 		w.Write([]byte(fmt.Sprintf("Đã chặn %d dải IP thuộc quốc gia: %s", successCount, countryCode)))
 	} else if r.Method == http.MethodDelete {
 		successCount := 0
@@ -1058,10 +1130,48 @@ func handleCountryBlacklist(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, lastErr.Error(), http.StatusInternalServerError)
 			return
 		}
+		if countryCode != "" {
+			mapMgr.RemoveActiveCountry(countryCode)
+			if r.URL.Query().Get("sync") != "true" {
+				syncGeoRuleEvent(http.MethodDelete, "country", countryCode)
+			}
+		}
 		w.Write([]byte(fmt.Sprintf("Đã mở khoá %d dải IP thuộc quốc gia: %s", successCount, countryCode)))
 	} else {
 		http.Error(w, "Method không hỗ trợ", http.StatusMethodNotAllowed)
 	}
+}
+
+func handleGeoPolicy(w http.ResponseWriter, r *http.Request) {
+	if mapMgr == nil {
+		http.Error(w, "XDP Program chưa được nạp", http.StatusServiceUnavailable)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method không hỗ trợ", http.StatusMethodNotAllowed)
+		return
+	}
+	action := r.URL.Query().Get("action")
+	policy := uint64(0)
+	if action == "whitelist" {
+		policy = 1
+	} else if action == "blacklist" {
+		policy = 0
+	} else {
+		http.Error(w, "Tham số action phải là whitelist hoặc blacklist", http.StatusBadRequest)
+		return
+	}
+
+	if err := mapMgr.SetGeoIPPolicy(policy); err != nil {
+		http.Error(w, "Lỗi khi cập nhật policy: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if r.URL.Query().Get("sync") != "true" {
+		syncGeoPolicyEvent(action)
+	}
+
+	w.Write([]byte(fmt.Sprintf("Đã cập nhật chế độ GeoIP thành: %s", action)))
 }
 
 func handleGeoIPHealth(w http.ResponseWriter, r *http.Request) {

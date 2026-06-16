@@ -470,10 +470,10 @@ async function addASN() {
     }
 }
 
-async function removeASN(cidr) {
-    if (confirm(`Xoá luật khoá dải mạng ${cidr}?`)) {
+async function removeASN(asn) {
+    if (confirm(`Bạn có chắc muốn bỏ chặn toàn bộ ASN ${asn} không?`)) {
         try {
-            await apiRequest(`rules/asn?cidr=${cidr}`, 'DELETE');
+            await apiRequest(`rules/asn?asn=${asn}`, 'DELETE');
             loadASN();
         } catch (e) {
             Swal.fire('Lỗi', e.message, 'error');
@@ -485,9 +485,11 @@ async function addCountry() {
     const { value: code } = await Swal.fire({
         title: 'Chặn Quốc gia',
         input: 'text',
-        inputLabel: 'Nhập mã Quốc gia (ví dụ VN, CN, RU)',
+        inputLabel: 'Mã quốc gia (ISO 3166-1 alpha-2, VD: VN, US, CN)',
+        inputPlaceholder: 'US',
         showCancelButton: true
     });
+
     if (code) {
         try {
             const res = await apiRequest(`rules/country?country=${code}`, 'POST');
@@ -499,11 +501,22 @@ async function addCountry() {
     }
 }
 
-async function removeCountry(cidr) {
-    if (confirm(`Xoá luật khoá dải mạng ${cidr}?`)) {
+async function removeCountry(country) {
+    if (confirm(`Bạn có chắc muốn bỏ chặn toàn bộ quốc gia ${country} không?`)) {
         try {
-            await apiRequest(`rules/country?cidr=${cidr}`, 'DELETE');
+            await apiRequest(`rules/country?country=${country}`, 'DELETE');
             loadCountry();
+        } catch (e) {
+            Swal.fire('Lỗi', e.message, 'error');
+        }
+    }
+}
+
+async function setGeoPolicy(action) {
+    if (confirm(`Bạn có chắc muốn đổi GeoIP Policy thành ${action.toUpperCase()} không?`)) {
+        try {
+            const res = await apiRequest(`rules/policy?action=${action}`, 'POST');
+            Swal.fire('Thành công', res, 'success');
         } catch (e) {
             Swal.fire('Lỗi', e.message, 'error');
         }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -12,11 +13,68 @@ import (
 
 // MapManager xử lý các logic đọc/ghi trực tiếp vào BPF Map
 type MapManager struct {
-	prog *XDPProgram
+	prog            *XDPProgram
+	activeCountries map[string]bool
+	activeASNs      map[string]bool
+	sync.RWMutex
 }
 
 func NewMapManager(prog *XDPProgram) *MapManager {
-	return &MapManager{prog: prog}
+	return &MapManager{
+		prog:            prog,
+		activeCountries: make(map[string]bool),
+		activeASNs:      make(map[string]bool),
+	}
+}
+
+// SetGeoIPPolicy ghi policy (0=Blacklist, 1=Whitelist) vào config_map
+func (m *MapManager) SetGeoIPPolicy(policy uint64) error {
+	key := uint32(2)
+	return m.prog.objs.ConfigMap.Put(key, policy)
+}
+
+func (m *MapManager) AddActiveCountry(countryCode string) {
+	m.Lock()
+	m.activeCountries[countryCode] = true
+	m.Unlock()
+}
+
+func (m *MapManager) RemoveActiveCountry(countryCode string) {
+	m.Lock()
+	delete(m.activeCountries, countryCode)
+	m.Unlock()
+}
+
+func (m *MapManager) GetActiveCountries() []string {
+	m.RLock()
+	defer m.RUnlock()
+	list := make([]string, 0, len(m.activeCountries))
+	for k := range m.activeCountries {
+		list = append(list, k)
+	}
+	return list
+}
+
+func (m *MapManager) AddActiveASN(asn string) {
+	m.Lock()
+	m.activeASNs[asn] = true
+	m.Unlock()
+}
+
+func (m *MapManager) RemoveActiveASN(asn string) {
+	m.Lock()
+	delete(m.activeASNs, asn)
+	m.Unlock()
+}
+
+func (m *MapManager) GetActiveASNs() []string {
+	m.RLock()
+	defer m.RUnlock()
+	list := make([]string, 0, len(m.activeASNs))
+	for k := range m.activeASNs {
+		list = append(list, k)
+	}
+	return list
 }
 
 // ipToUint32 chuyển đổi IP string thành uint32 theo kiến trúc little-endian của host

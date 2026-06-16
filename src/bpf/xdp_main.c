@@ -73,33 +73,39 @@ int xdp_prog_main(struct xdp_md *ctx)
         return XDP_DROP;
     }
     
-    // Tra cứu trong ASN Blacklist Trie
+    // Đọc GeoIP Policy từ config_map
+    u32 policy_key = 2;
+    u64 *policy_val = bpf_map_lookup_elem(&config_map, &policy_key);
+    u64 geoip_policy = policy_val ? *policy_val : 0; // 0 = Blacklist (default), 1 = Whitelist (Block all except)
+
+    // Tra cứu trong ASN/Country Blacklist Trie
     struct lpm_trie_key trie_key;
     trie_key.prefix_len = 32;
     trie_key.data = src_ip;
-    
-    u64 *asn_blocked = bpf_map_lookup_elem(&asn_blacklist_map, &trie_key);
-    if (asn_blocked) {
-        u32 drop_key = 1;
-        u64 *drop_stats = bpf_map_lookup_elem(&stats_map, &drop_key);
-        if (drop_stats) {
-            (*drop_stats)++;
+
+    if (geoip_policy == 0) {
+        // Blacklist mode: Nếu có trong map -> DROP
+        if (bpf_map_lookup_elem(&asn_blacklist_map, &trie_key) || 
+            bpf_map_lookup_elem(&country_blacklist_map, &trie_key)) {
+            u32 drop_key = 1;
+            u64 *drop_stats = bpf_map_lookup_elem(&stats_map, &drop_key);
+            if (drop_stats) (*drop_stats)++;
+            update_vip_stats(iph->daddr, 1);
+            return XDP_DROP;
         }
-        update_vip_stats(iph->daddr, 1);
-        return XDP_DROP;
-    }
-    
-    // Tra cứu trong Country Blacklist Trie
-    u64 *country_blocked = bpf_map_lookup_elem(&country_blacklist_map, &trie_key);
-    if (country_blocked) {
-        u32 drop_key = 1;
-        u64 *drop_stats = bpf_map_lookup_elem(&stats_map, &drop_key);
-        if (drop_stats) {
-            (*drop_stats)++;
+    } else {
+        // Whitelist mode: Nếu KHÔNG có trong map -> DROP
+        if (!bpf_map_lookup_elem(&asn_blacklist_map, &trie_key) && 
+            !bpf_map_lookup_elem(&country_blacklist_map, &trie_key)) {
+            u32 drop_key = 1;
+            u64 *drop_stats = bpf_map_lookup_elem(&stats_map, &drop_key);
+            if (drop_stats) (*drop_stats)++;
+            update_vip_stats(iph->daddr, 1);
+            return XDP_DROP;
         }
-        update_vip_stats(iph->daddr, 1);
-        return XDP_DROP;
     }
+
+
     
     // Chỉ xử lý TCP, UDP, ICMP và IPIP. Các giao thức khác bỏ qua
     if (iph->protocol != IPPROTO_UDP && iph->protocol != IPPROTO_TCP && iph->protocol != IPPROTO_ICMP && iph->protocol != IPPROTO_IPIP)

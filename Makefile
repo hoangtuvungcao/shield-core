@@ -17,7 +17,7 @@ bpf:
 
 control_plane:
 	@echo "═══ Building Go Control Plane ═══"
-	cd src/control_plane && go build -ldflags="-s -w" -o ../../build/shield-ctrl
+	cd src/control_plane && CGO_ENABLED=0 go build -ldflags="-s -w" -o ../../build/shield-ctrl
 	@echo "✓ shield-ctrl built"
 
 af_xdp:

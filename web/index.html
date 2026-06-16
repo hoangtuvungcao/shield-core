@@ -224,6 +224,15 @@
                 <!-- TAB: GeoIP -->
                 <section class="tab-pane" id="tab-geoip">
                     <div class="grid-2">
+                        <div class="panel glass" style="grid-column: 1 / -1; margin-bottom: 15px;">
+                            <div class="panel-header flex-between">
+                                <h3><i class="fa-solid fa-sliders"></i> Chế độ Lọc (GeoIP Policy)</h3>
+                                <div>
+                                    <button class="btn btn-sm btn-danger" onclick="setGeoPolicy('blacklist')"><i class="fa-solid fa-ban"></i> Blacklist (Mặc định)</button>
+                                    <button class="btn btn-sm btn-success" onclick="setGeoPolicy('whitelist')"><i class="fa-solid fa-check"></i> Whitelist (Chặn tất cả trừ...)</button>
+                                </div>
+                            </div>
+                        </div>
                         <div class="panel glass">
                             <div class="panel-header flex-between">
                                 <h3><i class="fa-solid fa-network-wired"></i> Chặn theo ASN</h3>
@@ -233,7 +242,7 @@
                                 <table class="data-table">
                                     <thead>
                                         <tr>
-                                            <th>CIDR/ASN</th>
+                                            <th>Mã ASN</th>
                                             <th>Xoá</th>
                                         </tr>
                                     </thead>
@@ -253,7 +262,7 @@
                                 <table class="data-table">
                                     <thead>
                                         <tr>
-                                            <th>CIDR/Country Code</th>
+                                            <th>Mã Quốc gia</th>
                                             <th>Xoá</th>
                                         </tr>
                                     </thead>

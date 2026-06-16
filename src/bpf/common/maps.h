@@ -109,7 +109,7 @@ struct {
     __uint(type, BPF_MAP_TYPE_LPM_TRIE);
     __type(key, lpm_trie_key_t);
     __type(value, u64);
-    __uint(max_entries, 65536);
+    __uint(max_entries, 524288);
     __uint(map_flags, BPF_F_NO_PREALLOC);
 } asn_blacklist_map SEC(".maps");
 
@@ -120,7 +120,7 @@ struct {
     __uint(type, BPF_MAP_TYPE_LPM_TRIE);
     __type(key, lpm_trie_key_t);
     __type(value, u64);
-    __uint(max_entries, 65536);
+    __uint(max_entries, 524288);
     __uint(map_flags, BPF_F_NO_PREALLOC);
 } country_blacklist_map SEC(".maps");
 
@@ -137,12 +137,12 @@ struct {
 } vip_stats_map SEC(".maps");
 
 // [MAP 10]: Config Map for dynamic thresholds
-// Key 0: PPS Threshold, Key 1: BPS Threshold
+// Key 0: PPS Threshold, Key 1: BPS Threshold, Key 2: GeoIP Policy (0: Default Pass/Blacklist, 1: Default Drop/Whitelist)
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __type(key, u32);
     __type(value, u64);
-    __uint(max_entries, 2);
+    __uint(max_entries, 3);
 } config_map SEC(".maps");
 
 
