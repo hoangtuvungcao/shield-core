@@ -802,11 +802,18 @@ func startAutoMitigation() {
 		}
 
 		expiredIPs, err := mapMgr.CleanExpiredBlacklist(ttl)
-		if err == nil {
+		if err == nil && len(expiredIPs) > 0 {
 			for _, ip := range expiredIPs {
 				log.Printf("[Blacklist Expiry] Đã tự động mở khóa IP hết hạn: %s", ip)
 				writeMitigationLog("auto_unblock", ip, "Blacklist TTL expired", 0)
+				mapMgr.RemoveBlacklistTarget(ip)
+				if strings.HasSuffix(ip, "/32") {
+					mapMgr.RemoveBlacklistTarget(strings.TrimSuffix(ip, "/32"))
+				}
+				// Đồng bộ sự kiện mở khoá tới các node khác
+				syncIPEvent("blacklist", http.MethodDelete, ip)
 			}
+			saveRulesState()
 		}
 	}
 }
@@ -1188,8 +1195,8 @@ func syncIPEvent(endpoint string, method string, ip string) {
 			if !strings.HasPrefix(secureNodeUrl, "https://") {
 				secureNodeUrl = "https://" + secureNodeUrl
 			}
-			url := fmt.Sprintf("%s/api/%s?target=%s&sync=true", secureNodeUrl, endpoint, ip)
-			req, err := http.NewRequest(method, url, nil)
+			urlStr := fmt.Sprintf("%s/api/%s?target=%s&sync=true", secureNodeUrl, endpoint, url.QueryEscape(ip))
+			req, err := http.NewRequest(method, urlStr, nil)
 			if err != nil {
 				log.Printf("[Sync -> %s] Lỗi tạo request: %v", secureNodeUrl, err)
 				return
@@ -1211,7 +1218,11 @@ func syncIPEvent(endpoint string, method string, ip string) {
 				return
 			}
 			resp.Body.Close()
-			log.Printf("[Sync -> %s] Đã đồng bộ sự kiện %s cho %s (IP: %s) (Status: %d)", secureNodeUrl, method, endpoint, ip, resp.StatusCode)
+			if resp.StatusCode >= 400 {
+				log.Printf("[Sync -> %s] [CẢNH BÁO] Đồng bộ %s cho %s (IP: %s) THẤT BẠI: Status %d", secureNodeUrl, method, endpoint, ip, resp.StatusCode)
+			} else {
+				log.Printf("[Sync -> %s] Đã đồng bộ sự kiện %s cho %s (IP: %s) (Status: %d)", secureNodeUrl, method, endpoint, ip, resp.StatusCode)
+			}
 		}(node)
 	}
 }
@@ -1426,12 +1437,24 @@ func handleWhitelist(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		mapMgr.RemoveWhitelistTarget(target)
+
+		// Kiểm tra nếu danh sách whitelist trống, tự động fallback về Blacklist (Default Pass / policy = 0)
+		whitelistEmpty := len(mapMgr.GetWhitelistTargets()) == 0
+		if whitelistEmpty {
+			log.Printf("[Whitelist] Danh sách Whitelist trống sau khi xoá %s, tự động fallback GeoIP Policy về 0 (Default Pass)", target)
+			mapMgr.SetGeoIPPolicy(0)
+			writeMitigationLog("POLICY_UPDATE", "0", "Auto fallback to blacklist (Default Pass) because whitelist is empty", 0)
+		}
+
 		saveRulesState()
 		fmt.Fprintf(w, "Đã xoá %d dải mạng cho target %s khỏi Whitelist\n", successCount, target)
 		writeMitigationLog("WHITELIST_REMOVE", target, "User removed from whitelist", 0)
 
 		if r.URL.Query().Get("sync") != "true" {
 			syncIPEvent("whitelist", http.MethodDelete, target)
+			if whitelistEmpty {
+				syncGeoPolicyEvent("0")
+			}
 		}
 	default:
 		http.Error(w, "Method không được hỗ trợ", http.StatusMethodNotAllowed)
