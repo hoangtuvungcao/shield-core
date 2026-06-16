@@ -26,7 +26,7 @@ af_xdp:
 		cd modules/xdp-tools && ./configure && make -C lib/libxdp; \
 	fi
 	@echo "═══ Building AF_XDP Fastpath ═══"
-	clang -O2 -g -I src/af_xdp -I modules/xdp-tools/headers \
+	clang -O2 -g -I src/af_xdp -I modules/xdp-tools/headers -I modules/xdp-tools/lib/libbpf/src/root/include \
 		-o build/shield-fastpath src/af_xdp/af_xdp_main.c src/af_xdp/dpi.c \
 		modules/xdp-tools/lib/libxdp/libxdp.a \
 		modules/xdp-tools/lib/libbpf/src/libbpf.a \
