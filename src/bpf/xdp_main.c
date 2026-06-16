@@ -73,6 +73,58 @@ int xdp_prog_main(struct xdp_md *ctx)
         return XDP_DROP;
     }
     
+    // Chỉ xử lý TCP, UDP, ICMP và IPIP. Các giao thức khác bỏ qua
+    if (iph->protocol != IPPROTO_UDP && iph->protocol != IPPROTO_TCP && iph->protocol != IPPROTO_ICMP && iph->protocol != IPPROTO_IPIP)
+    {
+        return XDP_PASS;
+    }
+
+    if (iph->protocol == IPPROTO_IPIP) {
+        return decapsulate_ipip(ctx, eth, iph);
+    }
+
+    // 3. Parsing L4 (TCP/UDP/ICMP Header)
+    struct tcphdr *tcph = NULL;
+    struct udphdr *udph = NULL;
+    struct icmphdr *icmph = NULL;
+    
+    u8 protocol = iph->protocol;
+    u16 dport = 0;
+
+    switch (protocol)
+    {
+        case IPPROTO_TCP:
+            if (unlikely((void *)iph + (iph->ihl * 4) > data_end))
+                return XDP_DROP;
+            tcph = (void *)iph + (iph->ihl * 4);
+            if (unlikely(tcph + 1 > (struct tcphdr *)data_end))
+                return XDP_DROP;
+            dport = bpf_ntohs(tcph->dest);
+            break;
+
+        case IPPROTO_UDP:
+            if (unlikely((void *)iph + (iph->ihl * 4) > data_end))
+                return XDP_DROP;
+            udph = (void *)iph + (iph->ihl * 4);
+            if (unlikely(udph + 1 > (struct udphdr *)data_end))
+                return XDP_DROP;
+            dport = bpf_ntohs(udph->dest);
+            break;
+
+        case IPPROTO_ICMP:
+            if (unlikely((void *)iph + (iph->ihl * 4) > data_end))
+                return XDP_DROP;
+            icmph = (void *)iph + (iph->ihl * 4);
+            if (unlikely(icmph + 1 > (struct icmphdr *)data_end))
+                return XDP_DROP;
+            break;
+    }
+
+    // [CRITICAL] Bỏ qua toàn bộ GeoIP/RateLimit cho lưu lượng quản trị (SSH và API)
+    if (dport == 22 || dport == 9090) {
+        return XDP_PASS;
+    }
+
     // Đọc GeoIP Policy từ config_map
     u32 policy_key = 2;
     u64 *policy_val = bpf_map_lookup_elem(&config_map, &policy_key);
@@ -106,58 +158,7 @@ int xdp_prog_main(struct xdp_md *ctx)
     }
 
 
-    
-    // Chỉ xử lý TCP, UDP, ICMP và IPIP. Các giao thức khác bỏ qua
-    if (iph->protocol != IPPROTO_UDP && iph->protocol != IPPROTO_TCP && iph->protocol != IPPROTO_ICMP && iph->protocol != IPPROTO_IPIP)
-    {
-        return XDP_PASS;
-    }
-
-    if (iph->protocol == IPPROTO_IPIP) {
-        return decapsulate_ipip(ctx, eth, iph);
-    }
-
-    // 3. Parsing L4 (TCP/UDP/ICMP Header)
-    struct tcphdr *tcph = NULL;
-    struct udphdr *udph = NULL;
-    struct icmphdr *icmph = NULL;
-    
-    u8 protocol = iph->protocol;
-
-    switch (protocol)
-    {
-        case IPPROTO_TCP:
-            if (unlikely((void *)iph + (iph->ihl * 4) > data_end))
-                return XDP_DROP;
-            tcph = (void *)iph + (iph->ihl * 4);
-            if (unlikely(tcph + 1 > (struct tcphdr *)data_end))
-                return XDP_DROP;
-            break;
-
-        case IPPROTO_UDP:
-            if (unlikely((void *)iph + (iph->ihl * 4) > data_end))
-                return XDP_DROP;
-            udph = (void *)iph + (iph->ihl * 4);
-            if (unlikely(udph + 1 > (struct udphdr *)data_end))
-                return XDP_DROP;
-            break;
-
-        case IPPROTO_ICMP:
-            if (unlikely((void *)iph + (iph->ihl * 4) > data_end))
-                return XDP_DROP;
-            icmph = (void *)iph + (iph->ihl * 4);
-            if (unlikely(icmph + 1 > (struct icmphdr *)data_end))
-                return XDP_DROP;
-            break;
-    }
-
     // 4. Các Pipeline sẽ được gắn vào đây:
-    u16 dport = 0;
-    if (protocol == IPPROTO_TCP && tcph != NULL) {
-        dport = bpf_ntohs(tcph->dest);
-    } else if (protocol == IPPROTO_UDP && udph != NULL) {
-        dport = bpf_ntohs(udph->dest);
-    }
     
     // [Pipeline 1] L3/L4 Firewall (Blacklist, Rate Limit)
     

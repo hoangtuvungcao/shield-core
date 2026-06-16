@@ -1147,6 +1147,21 @@ func handleGeoPolicy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "XDP Program chưa được nạp", http.StatusServiceUnavailable)
 		return
 	}
+	if r.Method == http.MethodGet {
+		policy, err := mapMgr.GetGeoIPPolicy()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		action := "blacklist"
+		if policy == 1 {
+			action = "whitelist"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"policy": action})
+		return
+	}
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method không hỗ trợ", http.StatusMethodNotAllowed)
 		return

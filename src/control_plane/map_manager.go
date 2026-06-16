@@ -29,8 +29,25 @@ func NewMapManager(prog *XDPProgram) *MapManager {
 
 // SetGeoIPPolicy ghi policy (0=Blacklist, 1=Whitelist) vào config_map
 func (m *MapManager) SetGeoIPPolicy(policy uint64) error {
-	key := uint32(2)
-	return m.prog.objs.ConfigMap.Put(key, policy)
+	if m.prog.objs.ConfigMap == nil {
+		return fmt.Errorf("ConfigMap chưa được nạp")
+	}
+	var policyKey uint32 = 2
+	return m.prog.objs.ConfigMap.Put(policyKey, policy)
+}
+
+// GetGeoIPPolicy đọc policy hiện tại
+func (m *MapManager) GetGeoIPPolicy() (uint64, error) {
+	if m.prog.objs.ConfigMap == nil {
+		return 0, fmt.Errorf("ConfigMap chưa được nạp")
+	}
+	var policyKey uint32 = 2
+	var val uint64
+	err := m.prog.objs.ConfigMap.Lookup(policyKey, &val)
+	if err != nil {
+		return 0, nil // Default to Blacklist
+	}
+	return val, nil
 }
 
 func (m *MapManager) AddActiveCountry(countryCode string) {
