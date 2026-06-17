@@ -52,20 +52,29 @@ struct {
     __uint(max_entries, 262144); // Hỗ trợ lưu stats của 256k IPs đồng thời
 } ip_stats_map SEC(".maps");
 
+struct backend_key {
+    __u32 vip;
+    __u16 vport;     // Cổng frontend (network byte order), nếu 0 tức là áp dụng cho mọi cổng
+    __u8 protocol;   // Giao thức (IPPROTO_TCP/UDP), nếu 0 tức là áp dụng cho mọi giao thức
+    __u8 pad;
+};
+
 struct backend_info {
     __u32 ip;
-    __u8 type; // 0 = IPIP, 1 = WireGuard (DNAT)
+    __u16 port;      // Cổng backend (network byte order), nếu 0 tức là giữ nguyên cổng gốc
+    __u8 type;       // 0 = IPIP, 1 = WireGuard (DNAT)
+    __u8 pad;
 };
 
 // -------------------------------------------------------------
 // [MAP 3]: Routing Table
-// Ánh xạ Frontend VIP tới Backend IP/Info
-// Key: Frontend VIP (u32)
+// Ánh xạ Frontend VIP/Port tới Backend IP/Port/Info
+// Key: struct backend_key
 // Value: struct backend_info
 // -------------------------------------------------------------
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, u32);
+    __type(key, struct backend_key);
     __type(value, struct backend_info);
     __uint(max_entries, 1024);
 } backend_map SEC(".maps");

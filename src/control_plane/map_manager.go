@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -285,20 +287,47 @@ func (m *MapManager) GetBlacklistTargets() []string {
 	return list
 }
 
-type BackendInfo struct {
-	IP   uint32
-	Type uint8
-	_    [3]byte // Padding
+type BackendKey struct {
+	Vip      uint32
+	Vport    uint16
+	Protocol uint8
+	Pad      uint8
 }
 
-// AddBackendVIP map Front-end VIP với Backend IP (IPIP hoặc WireGuard)
-func (m *MapManager) AddBackendVIP(vipStr string, backendStr string, tunnelType string) error {
+type BackendInfo struct {
+	IP   uint32
+	Port uint16
+	Type uint8
+	Pad  uint8
+}
+
+func htons(val uint16) uint16 {
+	return (val << 8) | (val >> 8)
+}
+
+func ntohs(val uint16) uint16 {
+	return (val << 8) | (val >> 8)
+}
+
+// AddBackendVIP map Front-end VIP với Backend IP/Port (IPIP hoặc WireGuard)
+func (m *MapManager) AddBackendVIP(vipStr string, vport uint16, protocol uint8, backendStr string, tunnelType string) error {
 	vipKey, err := ipToUint32(vipStr)
 	if err != nil {
 		return err
 	}
 
-	backendVal, err := ipToUint32(backendStr)
+	backendIPStr := backendStr
+	var backendPort uint16 = 0
+	if strings.Contains(backendStr, ":") {
+		parts := strings.Split(backendStr, ":")
+		backendIPStr = parts[0]
+		p, err := strconv.ParseUint(parts[1], 10, 16)
+		if err == nil {
+			backendPort = uint16(p)
+		}
+	}
+
+	backendVal, err := ipToUint32(backendIPStr)
 	if err != nil {
 		return err
 	}
@@ -313,52 +342,76 @@ func (m *MapManager) AddBackendVIP(vipStr string, backendStr string, tunnelType 
 		// Định tuyến UDP
 		exec.Command("iptables", "-t", "nat", "-A", "PREROUTING", "-d", vipStr, "-p", "udp", "-j", "DNAT", "--to-destination", backendStr).Run()
 		// Định tuyến ICMP (Ping)
-		exec.Command("iptables", "-t", "nat", "-A", "PREROUTING", "-d", vipStr, "-p", "icmp", "-j", "DNAT", "--to-destination", backendStr).Run()
+		exec.Command("iptables", "-t", "nat", "-A", "PREROUTING", "-d", vipStr, "-p", "icmp", "-j", "DNAT", "--to-destination", backendIPStr).Run()
+	}
+
+	key := BackendKey{
+		Vip:      vipKey,
+		Vport:    htons(vport),
+		Protocol: protocol,
+		Pad:      0,
 	}
 
 	info := BackendInfo{
 		IP:   backendVal,
+		Port: htons(backendPort),
 		Type: tType,
+		Pad:  0,
 	}
 
-	err = m.prog.objs.BackendMap.Put(vipKey, info)
+	err = m.prog.objs.BackendMap.Put(key, info)
 	if err != nil {
 		return fmt.Errorf("lỗi khi ghi VIP vào backend map: %v", err)
 	}
 	return nil
 }
 
-func (m *MapManager) RemoveBackendVIP(vipStr string, backendStr string, tunnelType string) error {
+func (m *MapManager) RemoveBackendVIP(vipStr string, vport uint16, protocol uint8, backendStr string, tunnelType string) error {
 	vipKey, err := ipToUint32(vipStr)
 	if err != nil {
 		return err
 	}
 
-	if tunnelType == "wireguard" && backendStr != "" {
+	backendIPStr := backendStr
+	if strings.Contains(backendStr, ":") {
+		backendIPStr = strings.Split(backendStr, ":")[0]
+	}
+
+	if tunnelType == "wireguard" && backendIPStr != "" {
 		// Gỡ bỏ iptables
 		exec.Command("iptables", "-t", "nat", "-D", "PREROUTING", "-d", vipStr, "-p", "tcp", "-m", "multiport", "!", "--dports", "22,9090", "-j", "DNAT", "--to-destination", backendStr).Run()
 		exec.Command("iptables", "-t", "nat", "-D", "PREROUTING", "-d", vipStr, "-p", "udp", "-j", "DNAT", "--to-destination", backendStr).Run()
-		exec.Command("iptables", "-t", "nat", "-D", "PREROUTING", "-d", vipStr, "-p", "icmp", "-j", "DNAT", "--to-destination", backendStr).Run()
+		exec.Command("iptables", "-t", "nat", "-D", "PREROUTING", "-d", vipStr, "-p", "icmp", "-j", "DNAT", "--to-destination", backendIPStr).Run()
 	}
 
-	return m.prog.objs.BackendMap.Delete(vipKey)
+	key := BackendKey{
+		Vip:      vipKey,
+		Vport:    htons(vport),
+		Protocol: protocol,
+		Pad:      0,
+	}
+
+	return m.prog.objs.BackendMap.Delete(key)
 }
 
 type RoutingEntry struct {
-	VIP        string `json:"vip"`
-	BackendIP  string `json:"backend_ip"`
-	TunnelType string `json:"tunnel_type"`
+	VIP         string `json:"vip"`
+	VPort       uint16 `json:"vport"`
+	Protocol    string `json:"protocol"`
+	BackendIP   string `json:"backend_ip"`
+	BackendPort uint16 `json:"backend_port"`
+	TunnelType  string `json:"tunnel_type"`
 }
 
 func (m *MapManager) GetRoutingMap() ([]RoutingEntry, error) {
 	var routes []RoutingEntry
-	var key uint32
+	var key BackendKey
 	var val BackendInfo
 
 	iter := m.prog.objs.BackendMap.Iterate()
 	for iter.Next(&key, &val) {
 		vipBytes := make([]byte, 4)
-		binary.LittleEndian.PutUint32(vipBytes, key)
+		binary.LittleEndian.PutUint32(vipBytes, key.Vip)
 
 		backendBytes := make([]byte, 4)
 		binary.LittleEndian.PutUint32(backendBytes, val.IP)
@@ -368,10 +421,20 @@ func (m *MapManager) GetRoutingMap() ([]RoutingEntry, error) {
 			tType = "wireguard"
 		}
 
+		protoStr := "any"
+		if key.Protocol == 6 {
+			protoStr = "tcp"
+		} else if key.Protocol == 17 {
+			protoStr = "udp"
+		}
+
 		routes = append(routes, RoutingEntry{
-			VIP:        net.IP(vipBytes).String(),
-			BackendIP:  net.IP(backendBytes).String(),
-			TunnelType: tType,
+			VIP:         net.IP(vipBytes).String(),
+			VPort:       ntohs(key.Vport),
+			Protocol:    protoStr,
+			BackendIP:   net.IP(backendBytes).String(),
+			BackendPort: ntohs(val.Port),
+			TunnelType:  tType,
 		})
 	}
 	return routes, iter.Err()
@@ -574,8 +637,8 @@ func (m *MapManager) GetMapHealth() []MapHealthInfo {
 				count++
 			}
 		case "backend_map":
-			var k uint32
-			var v uint32
+			var k BackendKey
+			var v BackendInfo
 			iter := m.prog.objs.BackendMap.Iterate()
 			for iter.Next(&k, &v) {
 				count++

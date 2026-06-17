@@ -20,9 +20,57 @@
 static __always_inline int encapsulate_ipip(struct xdp_md *ctx, struct ethhdr *eth, struct iphdr *iph) {
     if (unlikely(iph->ihl < 5)) return XDP_DROP;
     u32 vip = iph->daddr;
-    
-    // Tìm thông tin cấu hình Backend (IP & Loại hầm)
-    struct backend_info *backend = bpf_map_lookup_elem(&backend_map, &vip);
+    void *data_end = (void *)(long)ctx->data_end;
+
+    u16 dport_net = 0;
+    u16 dport_host = 0;
+    u8 protocol = iph->protocol;
+
+    if (protocol == IPPROTO_TCP) {
+        u16 ihl = iph->ihl * 4;
+        struct tcphdr *tcph = (struct tcphdr *)((char *)iph + ihl);
+        asm volatile("" : "+r"(tcph));
+        if (unlikely((void *)tcph + sizeof(struct tcphdr) > data_end)) {
+            return XDP_PASS;
+        }
+        dport_net = tcph->dest;
+        dport_host = bpf_ntohs(tcph->dest);
+    } else if (protocol == IPPROTO_UDP) {
+        u16 ihl = iph->ihl * 4;
+        struct udphdr *udph = (struct udphdr *)((char *)iph + ihl);
+        asm volatile("" : "+r"(udph));
+        if (unlikely((void *)udph + sizeof(struct udphdr) > data_end)) {
+            return XDP_PASS;
+        }
+        dport_net = udph->dest;
+        dport_host = bpf_ntohs(udph->dest);
+    }
+
+    // Bỏ qua đóng gói đối với các cổng quản trị mặc định (22 cho SSH, 9090 cho API)
+    if (dport_host == 22 || dport_host == 9090) {
+        return XDP_PASS;
+    }
+
+    // Tìm thông tin cấu hình Backend (IP & Loại hầm & Cổng đích)
+    // Thử tìm theo Key đầy đủ: (vip, vport, protocol)
+    struct backend_key key = {
+        .vip = vip,
+        .vport = dport_net, // Network byte order
+        .protocol = protocol,
+        .pad = 0
+    };
+    struct backend_info *backend = bpf_map_lookup_elem(&backend_map, &key);
+    if (!backend) {
+        // Thử tìm theo Key fallback: (vip, 0, 0)
+        struct backend_key fallback_key = {
+            .vip = vip,
+            .vport = 0,
+            .protocol = 0,
+            .pad = 0
+        };
+        backend = bpf_map_lookup_elem(&backend_map, &fallback_key);
+    }
+
     if (!backend) {
         // Nếu không có mapping, đẩy lên cho Kernel (chạy mode local) hoặc để cho AF_XDP.
         return XDP_PASS;
@@ -34,32 +82,35 @@ static __always_inline int encapsulate_ipip(struct xdp_md *ctx, struct ethhdr *e
         return XDP_PASS;
     }
 
-    // Bỏ qua đóng gói đối với các cổng quản trị mặc định (22 cho SSH, 9090 cho API)
-    // và các cổng đang chạy động được cập nhật qua local_ports_map
-    void *data_end = (void *)(long)ctx->data_end;
-    u16 dport = 0;
-    if (iph->protocol == IPPROTO_TCP) {
-        u16 ihl = iph->ihl * 4;
-        struct tcphdr *tcph = (struct tcphdr *)((char *)iph + ihl);
-        asm volatile("" : "+r"(tcph));
-        if (unlikely((void *)tcph + sizeof(struct tcphdr) > data_end)) {
-            return XDP_PASS;
-        }
-        dport = bpf_ntohs(tcph->dest);
-    } else if (iph->protocol == IPPROTO_UDP) {
-        u16 ihl = iph->ihl * 4;
-        struct udphdr *udph = (struct udphdr *)((char *)iph + ihl);
-        asm volatile("" : "+r"(udph));
-        if (unlikely((void *)udph + sizeof(struct udphdr) > data_end)) {
-            return XDP_PASS;
-        }
-        dport = bpf_ntohs(udph->dest);
-    }
-
-    if (dport != 0) {
-        // Fallback cứng cổng quản trị
-        if (dport == 22 || dport == 9090) {
-            return XDP_PASS;
+    // Đổi cổng đích của gói tin gốc (inner packet) nếu backend->port được chỉ định (!= 0)
+    if (backend->port != 0) {
+        if (protocol == IPPROTO_TCP) {
+            u16 ihl = iph->ihl * 4;
+            struct tcphdr *tcph = (struct tcphdr *)((char *)iph + ihl);
+            asm volatile("" : "+r"(tcph));
+            if (unlikely((void *)tcph + sizeof(struct tcphdr) > data_end)) {
+                return XDP_DROP;
+            }
+            u32 old_port = tcph->dest;
+            u32 new_port = backend->port;
+            tcph->check = csum_diff4(old_port, new_port, tcph->check);
+            tcph->dest = backend->port;
+        } else if (protocol == IPPROTO_UDP) {
+            u16 ihl = iph->ihl * 4;
+            struct udphdr *udph = (struct udphdr *)((char *)iph + ihl);
+            asm volatile("" : "+r"(udph));
+            if (unlikely((void *)udph + sizeof(struct udphdr) > data_end)) {
+                return XDP_DROP;
+            }
+            if (udph->check != 0) {
+                u32 old_port = udph->dest;
+                u32 new_port = backend->port;
+                udph->check = csum_diff4(old_port, new_port, udph->check);
+                if (udph->check == 0) {
+                    udph->check = 0xFFFF;
+                }
+            }
+            udph->dest = backend->port;
         }
     }
 

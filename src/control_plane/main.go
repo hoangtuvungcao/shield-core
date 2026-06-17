@@ -997,6 +997,44 @@ func handleBlacklist(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func syncRoutingEvent(method string, vip string, vport uint16, protocol uint8, backend string, tunnelType string) {
+	for _, node := range clusterNodes {
+		if isLocalAddress(node) {
+			continue
+		}
+		go func(nodeUrl string) {
+			secureNodeUrl := strings.Replace(nodeUrl, "http://", "https://", 1)
+			if !strings.HasPrefix(secureNodeUrl, "https://") {
+				secureNodeUrl = "https://" + secureNodeUrl
+			}
+			protoStr := "any"
+			if protocol == 6 {
+				protoStr = "tcp"
+			} else if protocol == 17 {
+				protoStr = "udp"
+			}
+			urlStr := fmt.Sprintf("%s/api/routing?vip=%s&vport=%d&protocol=%s&backend=%s&type=%s&sync=true",
+				secureNodeUrl, url.QueryEscape(vip), vport, protoStr, url.QueryEscape(backend), url.QueryEscape(tunnelType))
+			req, err := http.NewRequest(method, urlStr, nil)
+			if err != nil {
+				return
+			}
+			req.Header.Set("X-API-Key", configuredAPIKey)
+			tr := &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			}
+			client := &http.Client{
+				Transport: tr,
+				Timeout:   3 * time.Second,
+			}
+			resp, err := client.Do(req)
+			if err == nil {
+				resp.Body.Close()
+			}
+		}(node)
+	}
+}
+
 func handleRouting(w http.ResponseWriter, r *http.Request) {
 	if mapMgr == nil {
 		http.Error(w, "XDP Program chưa được nạp", http.StatusServiceUnavailable)
@@ -1021,10 +1059,37 @@ func handleRouting(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		if err := mapMgr.AddBackendVIP(vip, backend, tunnelType); err != nil {
+		var vport uint16 = 0
+		if vp := r.URL.Query().Get("vport"); vp != "" {
+			p, err := strconv.ParseUint(vp, 10, 16)
+			if err == nil {
+				vport = uint16(p)
+			}
+		}
+
+		var protocol uint8 = 0
+		protoStr := strings.ToLower(r.URL.Query().Get("protocol"))
+		if protoStr == "" {
+			protoStr = strings.ToLower(r.URL.Query().Get("proto"))
+		}
+		if protoStr == "tcp" {
+			protocol = 6
+		} else if protoStr == "udp" {
+			protocol = 17
+		} else if vport != 0 {
+			protocol = 6
+			protoStr = "tcp"
+		}
+
+		if err := mapMgr.AddBackendVIP(vip, vport, protocol, backend, tunnelType); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		if r.URL.Query().Get("sync") != "true" {
+			syncRoutingEvent(http.MethodPost, vip, vport, protocol, backend, tunnelType)
+		}
+
 		w.Write([]byte("Đã map VIP " + vip + " -> Backend " + backend + " (" + tunnelType + ")"))
 	} else if r.Method == http.MethodDelete {
 		vip := r.URL.Query().Get("vip")
@@ -1034,10 +1099,38 @@ func handleRouting(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Thiếu tham số vip", http.StatusBadRequest)
 			return
 		}
-		if err := mapMgr.RemoveBackendVIP(vip, backend, tunnelType); err != nil {
+
+		var vport uint16 = 0
+		if vp := r.URL.Query().Get("vport"); vp != "" {
+			p, err := strconv.ParseUint(vp, 10, 16)
+			if err == nil {
+				vport = uint16(p)
+			}
+		}
+
+		var protocol uint8 = 0
+		protoStr := strings.ToLower(r.URL.Query().Get("protocol"))
+		if protoStr == "" {
+			protoStr = strings.ToLower(r.URL.Query().Get("proto"))
+		}
+		if protoStr == "tcp" {
+			protocol = 6
+		} else if protoStr == "udp" {
+			protocol = 17
+		} else if vport != 0 {
+			protocol = 6
+			protoStr = "tcp"
+		}
+
+		if err := mapMgr.RemoveBackendVIP(vip, vport, protocol, backend, tunnelType); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		if r.URL.Query().Get("sync") != "true" {
+			syncRoutingEvent(http.MethodDelete, vip, vport, protocol, backend, tunnelType)
+		}
+
 		w.Write([]byte("Đã xoá map VIP " + vip))
 	} else {
 		http.Error(w, "Method không hỗ trợ", http.StatusMethodNotAllowed)
