@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -309,8 +310,100 @@ func ntohs(val uint16) uint16 {
 	return (val << 8) | (val >> 8)
 }
 
+func addWireGuardPeer(pubkey string, allowedIP string, endpoint string) {
+	if pubkey == "" || allowedIP == "" {
+		return
+	}
+	// 1. Cấu hình nóng bằng lệnh wg set
+	args := []string{"set", "wg0", "peer", pubkey, "allowed-ips", allowedIP + "/32"}
+	if endpoint != "" {
+		args = append(args, "endpoint", endpoint)
+	}
+	exec.Command("wg", args...).Run()
+
+	// 2. Ghi vào file /etc/wireguard/wg0.conf để lưu trữ vĩnh viễn
+	confPath := "/etc/wireguard/wg0.conf"
+	data, err := os.ReadFile(confPath)
+	if err == nil {
+		content := string(data)
+		if !strings.Contains(content, pubkey) {
+			peerConfig := fmt.Sprintf("\n[Peer]\nPublicKey = %s\nAllowedIPs = %s/32\n", pubkey, allowedIP)
+			if endpoint != "" {
+				peerConfig += fmt.Sprintf("Endpoint = %s\n", endpoint)
+			}
+			peerConfig += "PersistentKeepalive = 25\n"
+
+			f, err := os.OpenFile(confPath, os.O_APPEND|os.O_WRONLY, 0600)
+			if err == nil {
+				f.WriteString(peerConfig)
+				f.Close()
+			}
+		}
+	}
+}
+
+func removeWireGuardPeer(pubkey string) {
+	if pubkey == "" {
+		return
+	}
+	// 1. Cấu hình nóng xóa peer
+	exec.Command("wg", "set", "wg0", "peer", pubkey, "remove").Run()
+
+	// 2. Xóa khỏi file /etc/wireguard/wg0.conf
+	confPath := "/etc/wireguard/wg0.conf"
+	data, err := os.ReadFile(confPath)
+	if err == nil {
+		content := string(data)
+		if strings.Contains(content, pubkey) {
+			lines := strings.Split(content, "\n")
+			var newLines []string
+			inPeerBlock := false
+			var peerBlock []string
+
+			for i := 0; i < len(lines); i++ {
+				line := lines[i]
+				if strings.HasPrefix(strings.TrimSpace(line), "[Peer]") {
+					if inPeerBlock {
+						if !blockContains(peerBlock, pubkey) {
+							newLines = append(newLines, peerBlock...)
+						}
+					}
+					inPeerBlock = true
+					peerBlock = []string{line}
+				} else if inPeerBlock {
+					if strings.HasPrefix(strings.TrimSpace(line), "[Interface]") {
+						inPeerBlock = false
+						if !blockContains(peerBlock, pubkey) {
+							newLines = append(newLines, peerBlock...)
+						}
+						newLines = append(newLines, line)
+					} else {
+						peerBlock = append(peerBlock, line)
+					}
+				} else {
+					newLines = append(newLines, line)
+				}
+			}
+			if inPeerBlock && !blockContains(peerBlock, pubkey) {
+				newLines = append(newLines, peerBlock...)
+			}
+
+			os.WriteFile(confPath, []byte(strings.Join(newLines, "\n")), 0600)
+		}
+	}
+}
+
+func blockContains(block []string, target string) bool {
+	for _, l := range block {
+		if strings.Contains(l, target) {
+			return true
+		}
+	}
+	return false
+}
+
 // AddBackendVIP map Front-end VIP với Backend IP/Port (IPIP hoặc WireGuard)
-func (m *MapManager) AddBackendVIP(vipStr string, vport uint16, protocol uint8, backendStr string, tunnelType string) error {
+func (m *MapManager) AddBackendVIP(vipStr string, vport uint16, protocol uint8, backendStr string, tunnelType string, pubkey string, endpoint string) error {
 	vipKey, err := ipToUint32(vipStr)
 	if err != nil {
 		return err
@@ -335,6 +428,11 @@ func (m *MapManager) AddBackendVIP(vipStr string, vport uint16, protocol uint8, 
 	var tType uint8 = 0 // IPIP
 	if tunnelType == "wireguard" {
 		tType = 1
+
+		// Tự động add peer WireGuard trên VPS
+		if pubkey != "" {
+			addWireGuardPeer(pubkey, backendIPStr, endpoint)
+		}
 
 		// Thiết lập iptables DNAT cho WireGuard (BỎ QUA cổng 22 SSH và 9090 API)
 		// Định tuyến TCP
@@ -366,7 +464,7 @@ func (m *MapManager) AddBackendVIP(vipStr string, vport uint16, protocol uint8, 
 	return nil
 }
 
-func (m *MapManager) RemoveBackendVIP(vipStr string, vport uint16, protocol uint8, backendStr string, tunnelType string) error {
+func (m *MapManager) RemoveBackendVIP(vipStr string, vport uint16, protocol uint8, backendStr string, tunnelType string, pubkey string) error {
 	vipKey, err := ipToUint32(vipStr)
 	if err != nil {
 		return err
@@ -377,21 +475,52 @@ func (m *MapManager) RemoveBackendVIP(vipStr string, vport uint16, protocol uint
 		backendIPStr = strings.Split(backendStr, ":")[0]
 	}
 
-	if tunnelType == "wireguard" && backendIPStr != "" {
-		// Gỡ bỏ iptables
-		exec.Command("iptables", "-t", "nat", "-D", "PREROUTING", "-d", vipStr, "-p", "tcp", "-m", "multiport", "!", "--dports", "22,9090", "-j", "DNAT", "--to-destination", backendStr).Run()
-		exec.Command("iptables", "-t", "nat", "-D", "PREROUTING", "-d", vipStr, "-p", "udp", "-j", "DNAT", "--to-destination", backendStr).Run()
-		exec.Command("iptables", "-t", "nat", "-D", "PREROUTING", "-d", vipStr, "-p", "icmp", "-j", "DNAT", "--to-destination", backendIPStr).Run()
+	if tunnelType == "wireguard" {
+		if pubkey != "" {
+			removeWireGuardPeer(pubkey)
+		}
+
+		if backendIPStr != "" {
+			// Gỡ bỏ iptables
+			exec.Command("iptables", "-t", "nat", "-D", "PREROUTING", "-d", vipStr, "-p", "tcp", "-m", "multiport", "!", "--dports", "22,9090", "-j", "DNAT", "--to-destination", backendStr).Run()
+			exec.Command("iptables", "-t", "nat", "-D", "PREROUTING", "-d", vipStr, "-p", "udp", "-j", "DNAT", "--to-destination", backendStr).Run()
+			exec.Command("iptables", "-t", "nat", "-D", "PREROUTING", "-d", vipStr, "-p", "icmp", "-j", "DNAT", "--to-destination", backendIPStr).Run()
+		}
 	}
 
-	key := BackendKey{
-		Vip:      vipKey,
-		Vport:    htons(vport),
-		Protocol: protocol,
-		Pad:      0,
+	// 1. Thử xóa key cụ thể trước nếu có vport
+	if vport != 0 {
+		key := BackendKey{
+			Vip:      vipKey,
+			Vport:    htons(vport),
+			Protocol: protocol,
+			Pad:      0,
+		}
+		deleteErr := m.prog.objs.BackendMap.Delete(key)
+		if deleteErr == nil {
+			return nil
+		}
 	}
 
-	return m.prog.objs.BackendMap.Delete(key)
+	// 2. Fallback: Nếu không tìm thấy key cụ thể hoặc không truyền vport, duyệt map và xóa tất cả các key trùng VIP này
+	var k BackendKey
+	var v BackendInfo
+	var keysToDelete []BackendKey
+	iter := m.prog.objs.BackendMap.Iterate()
+	for iter.Next(&k, &v) {
+		if k.Vip == vipKey {
+			keysToDelete = append(keysToDelete, k)
+		}
+	}
+	if err := iter.Err(); err != nil {
+		return fmt.Errorf("lỗi duyệt map khi xóa: %v", err)
+	}
+
+	for _, keyToDelete := range keysToDelete {
+		m.prog.objs.BackendMap.Delete(keyToDelete)
+	}
+
+	return nil
 }
 
 type RoutingEntry struct {
